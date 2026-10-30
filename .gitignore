@@ -1,0 +1,8 @@
+# Herramientas locales
+.claude/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Datos de prueba: contiene contraseñas de cuentas de prueba
+supabase/seed_pruebas.sql
