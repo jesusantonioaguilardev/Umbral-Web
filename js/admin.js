@@ -100,42 +100,46 @@ window.Admin = (function () {
     const el = h(`
       <div class="admin">
         <aside class="sidebar" id="sb">
-          <div class="brand"><div class="logo">U</div>Umbral</div>
-          <div class="small" style="padding:0 10px 10px;color:#8fa9a5">${esc(me.condominio?.nombre || "")}</div>
-          <nav class="nav" id="nav"></nav>
+          <div class="sb-head">
+            <div class="brand">${UI.logo}<span>Umbral<span class="sub">${esc(me.condominio?.nombre || "Administración")}</span></span></div>
+            <button type="button" class="btn ghost icon menu-btn" id="menu" aria-label="Abrir menú" aria-expanded="false" aria-controls="sbBody">☰</button>
+          </div>
+          <div class="sb-body" id="sbBody">
+            <nav class="nav" id="nav" aria-label="Menú"></nav>
+            <div class="sb-foot">
+              <div class="user-pill"><span class="avatar" aria-hidden="true">${esc(initials(me.nombre))}</span><span class="small">${esc(me.nombre)}<br><span class="muted">Administración</span></span></div>
+              <div class="row"><span id="theme"></span><button type="button" class="btn" id="salir">Salir</button></div>
+            </div>
+          </div>
         </aside>
         <div class="main">
-          <div class="topbar">
-            <button class="btn ghost menu-btn" id="menu">☰</button>
-            <strong id="ttl"></strong>
-            <div class="spacer"></div>
-            <span id="theme"></span>
-            <div class="user-pill"><span class="avatar">${initials(me.nombre)}</span><span class="small">${esc(me.nombre)}<br><span class="muted">Administración</span></span></div>
-            <button class="btn" id="salir">Salir</button>
-          </div>
-          <div id="alertas"></div>
-          <div class="content" id="content"></div>
+          <div id="alertas" role="alert"></div>
+          <main class="content" id="content"></main>
         </div>
       </div>`);
     root.appendChild(el);
     el.querySelector("#theme").appendChild(UI.themeToggle());
     const $ = (s) => el.querySelector(s);
     $("#salir").onclick = logout;
-    $("#menu").onclick = () => $("#sb").classList.toggle("open");
+    $("#menu").onclick = () => $("#menu").setAttribute("aria-expanded", $("#sb").classList.toggle("open"));
 
-    $("#nav").innerHTML = PAGES.map((p) => p.group ? `<div class="group">${p.group}</div>` : `<a data-p="${p.id}"><span style="width:18px;text-align:center">${p.icon}</span>${p.label}<span class="badge hidden" data-b="${p.id}"></span></a>`).join("");
+    $("#nav").innerHTML = PAGES.map((p) => p.group ? `<div class="group">${esc(p.group)}</div>` : `<button type="button" class="nav-item" data-p="${esc(p.id)}">${esc(p.label)}<span class="badge hidden" data-b="${esc(p.id)}"></span></button>`).join("");
     $("#nav").querySelectorAll("[data-p]").forEach((a) => (a.onclick = () => go(a.dataset.p)));
 
     function go(p) {
       page = p; try { sessionStorage.setItem("umbral_admin_page", p); } catch (e) {}
-      $("#sb").classList.remove("open");
-      $("#nav").querySelectorAll("[data-p]").forEach((a) => a.classList.toggle("active", a.dataset.p === p));
-      $("#ttl").textContent = PAGES.find((x) => x.id === p)?.label || "";
+      $("#sb").classList.remove("open"); $("#menu").setAttribute("aria-expanded", "false");
+      $("#nav").querySelectorAll("[data-p]").forEach((a) => { a.classList.toggle("active", a.dataset.p === p); a.toggleAttribute("aria-current", a.dataset.p === p); });
+      document.title = (PAGES.find((x) => x.id === p)?.label || "Panel") + " · Umbral";
       const c = $("#content"); c.innerHTML = `<div class="empty">Cargando…</div>`;
-      (VIEWS[p] || VIEWS.resumen)(c).catch((e) => (c.innerHTML = `<div class="card error">${esc(e.message)}</div>`));
+      (VIEWS[p] || VIEWS.resumen)(c).catch((e) => (c.innerHTML = `<div class="card error"><b>No se pudo cargar esta sección.</b> ${esc(e.message)} <button type="button" class="btn sm" id="retry" style="margin-left:8px">Reintentar</button></div>`, c.querySelector("#retry").onclick = refresh));
     }
     const refresh = () => go(page);
-    const head = (title, sub, actions = "") => `<div class="page-head"><div><h1>${esc(title)}</h1>${sub ? `<div class="muted">${sub}</div>` : ""}</div><div class="spacer"></div>${actions}</div>`;
+    const head = (title, sub, actions = "") => `<div class="page-head"><div><h1>${esc(title)}</h1>${sub ? `<p class="sub">${sub}</p>` : ""}</div><div class="spacer"></div>${actions ? `<div class="acts">${actions}</div>` : ""}</div>`;
+    // Fecha larga de hoy en la zona del condominio: "Viernes 31 de octubre"
+    const hoyLargo = () => { const t = new Date().toLocaleDateString("es-MX", { timeZone: zona.tz, weekday: "long", day: "numeric", month: "long" }).replace(",", ""); return t.charAt(0).toUpperCase() + t.slice(1); };
+    const resultado = (a) => (a.permitido ? `<span class="chip ok">✓ Permitido</span>` : `<span class="chip bad">✕ ${esc(a.motivo || "Denegado")}</span>`);
+    const tablaAccesos = (accesos) => `<div class="table-wrap"><table class="table"><thead><tr><th>Hora</th><th>Persona</th><th>Unidad</th><th>Tipo</th><th>Resultado</th></tr></thead><tbody>${accesos.map((a) => `<tr><td class="muted num" style="text-align:left">${time(a.created_at)}</td><td><b>${esc(a.nombre)}</b></td><td>${esc(a.unidad)}</td><td class="muted">${esc(TIPOS[a.tipo] || a.tipo)}</td><td>${resultado(a)}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">Sin accesos hoy. Las lecturas de caseta aparecerán aquí.</td></tr>`}</tbody></table></div>`;
     const opts = (arr, l, v = "id") => arr.map((x) => ({ value: x[v], label: typeof l === "function" ? l(x) : x[l] }));
 
     async function badges() {
@@ -154,7 +158,7 @@ window.Admin = (function () {
         const meses = k.meses || [];
         const max = Math.max(1, ...meses.flatMap((m) => [+m.ingresos, +m.egresos]));
         const bal = meses.length ? +meses[meses.length - 1].ingresos - +meses[meses.length - 1].egresos : 0;
-        c.innerHTML = head("Resumen", "Información financiera y operativa lista para el comité") + `
+        c.innerHTML = head("Resumen", esc(hoyLargo())) + `
           <div class="grid g4" style="margin-bottom:16px">
             <div class="card kpi"><div class="label">Cobrado en el mes</div><div class="value">${money(k.cobrado_mes)}</div><div class="sub">Pagos SPEI, tarjeta y efectivo</div></div>
             <div class="card kpi"><div class="label">Unidades al corriente</div><div class="value">${pct}%</div><div class="progress" style="margin-top:8px"><div style="width:${pct}%"></div></div><div class="sub">${k.unidades_al_corriente} de ${k.unidades}</div></div>
@@ -168,7 +172,7 @@ window.Admin = (function () {
               <div class="bars ${max <= 1 ? "hidden" : ""}">${meses.map((m) => { const [, mm] = m.mes.split("-");
                 return `<div class="m"><div class="pair"><div class="bar in" style="height:${(m.ingresos / max) * 100}%" title="Ingresos ${money(m.ingresos)}"></div><div class="bar out" style="height:${(m.egresos / max) * 100}%" title="Egresos ${money(m.egresos)}"></div></div></div>`; }).join("")}</div>
               <div class="row" style="gap:18px;padding:0 4px">${meses.map((m) => `<div class="small muted" style="flex:1;text-align:center">${MESES[+m.mes.split("-")[1] - 1]}</div>`).join("")}</div>
-              <div class="legend"><span><i style="background:var(--accent)"></i>Ingresos</span><span><i style="background:#c5ccd3"></i>Egresos</span></div>
+              <div class="legend"><span><i style="background:var(--accent)"></i>Ingresos</span><span><i style="background:var(--border-strong)"></i>Egresos</span></div>
             </div>
             <div class="grid" style="align-content:start">
               <div class="card kpi"><div class="label">Accesos hoy</div><div class="value">${k.accesos_hoy}</div></div>
@@ -176,8 +180,8 @@ window.Admin = (function () {
               <div class="card kpi"><div class="label">Paquetes por entregar</div><div class="value">${k.paquetes_pendientes}</div></div>
             </div>
           </div>
-          <div class="card" style="margin-top:16px"><header><h2>Últimos accesos</h2><div class="spacer"></div><button class="btn" id="vb">Ver bitácora</button></header>
-            <div class="table-wrap"><table class="table"><tbody>${accesos.map((a) => `<tr><td class="muted">${time(a.created_at)}</td><td><b>${esc(a.nombre)}</b></td><td>${esc(a.unidad)}</td><td>${a.permitido ? `<span class="chip">${esc(TIPOS[a.tipo])}</span>` : `<span class="chip bad">Denegado</span>`}</td></tr>`).join("") || `<tr><td class="empty">Sin accesos hoy</td></tr>`}</tbody></table></div></div>`;
+          <div class="card" style="margin-top:16px"><header><h2>Accesos recientes</h2><div class="spacer"></div><button type="button" class="btn link" id="vb">Ver bitácora</button></header>
+            ${tablaAccesos(accesos)}</div>`;
         c.querySelector("#vb").onclick = () => go("accesos");
       },
 
@@ -198,7 +202,7 @@ window.Admin = (function () {
           c.querySelector("#tb").innerHTML = rows.map((u) => `<tr>
             <td><b>${esc(u.nombre)}</b></td><td>${esc(u.propietario || "—")}</td><td class="small muted">${esc(u.clabe || "—")}</td>
             <td class="num">${money(u.pendiente)}</td><td class="num" style="color:${u.vencido ? "var(--bad)" : "inherit"}">${money(u.vencido)}</td>
-            <td>${u.estado === "al_corriente" ? `<span class="chip ok">Al corriente</span>` : u.estado === "vencido" ? `<span class="chip bad">Vencida</span>` : `<span class="chip warn">Pendiente</span>`}</td>
+            <td>${u.estado === "al_corriente" ? `<span class="chip ok">✓ Al corriente</span>` : u.estado === "vencido" ? `<span class="chip bad">✕ Vencida</span>` : `<span class="chip warn">Pendiente</span>`}</td>
             <td><button class="btn" data-u="${esc(u.id)}">Estado de cuenta</button></td></tr>`).join("") || `<tr><td colspan="7" class="empty">Sin resultados</td></tr>`;
           c.querySelectorAll("[data-u]").forEach((b) => (b.onclick = () => estadoCuenta(us.find((u) => u.id === b.dataset.u))));
         };
@@ -245,7 +249,7 @@ window.Admin = (function () {
         c.innerHTML = head("Pagos recibidos", `${ps.length} pagos · ${money(total)} confirmados${porConfirmar ? ` · ${porConfirmar} por confirmar` : ""}`, `<button class="btn" id="csv">Exportar CSV</button>`) + `
           <div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>Fecha</th><th>Unidad</th><th>Método</th><th>Referencia / CEP</th><th class="num">Monto</th><th>Estado</th></tr></thead><tbody>
           ${ps.map((p) => `<tr><td>${dateTime(p.created_at)}</td><td><b>${esc(p.unidad)}</b></td><td><span class="chip">${esc(p.metodo.toUpperCase())}</span></td><td class="small muted">${esc(p.referencia || "—")}</td><td class="num">${money(p.monto)}</td>
-            <td>${p.confirmado ? `<span class="chip ok">Confirmado</span>` : `<button class="btn" data-ok="${esc(p.id)}">Confirmar</button>`}</td></tr>`).join("") || `<tr><td colspan="6" class="empty">Aún no hay pagos</td></tr>`}
+            <td>${p.confirmado ? `<span class="chip ok">✓ Confirmado</span>` : `<button class="btn sm" data-ok="${esc(p.id)}">Confirmar</button>`}</td></tr>`).join("") || `<tr><td colspan="6" class="empty">Aún no hay pagos</td></tr>`}
           </tbody></table></div></div>`;
         c.querySelectorAll("[data-ok]").forEach((b) => (b.onclick = async () => {
           const p = ps.find((x) => x.id === b.dataset.ok);
@@ -284,7 +288,7 @@ window.Admin = (function () {
           const qv = c.querySelector("#bq").value.toLowerCase(), ft = c.querySelector("#ft").value, fr = c.querySelector("#fr").value;
           const f = rows.filter((r) => (r.nombre + " " + r.unidad + " " + (r.placa || "")).toLowerCase().includes(qv) && (!ft || r.tipo === ft) && (!fr || String(+r.permitido) === fr));
           c.querySelector("#tb").innerHTML = f.map((r) => `<tr><td class="small">${dateTime(r.created_at)}</td><td><b>${esc(r.nombre)}</b>${r.placa ? `<div class="small muted">Placa ${esc(r.placa)}</div>` : ""}</td><td>${esc(r.unidad)}</td><td>${esc(TIPOS[r.tipo] || r.tipo)}</td><td class="small muted">${esc(r.autorizo || "—")}</td><td class="small muted">${esc(r.punto || "")}</td>
-            <td>${r.permitido ? `<span class="chip ok">Permitido</span>` : `<span class="chip bad" title="${esc(r.motivo || "")}">${esc(r.motivo || "Denegado")}</span>`}</td></tr>`).join("") || `<tr><td colspan="7" class="empty">Sin registros</td></tr>`;
+            <td>${r.permitido ? `<span class="chip ok">✓ Permitido</span>` : `<span class="chip bad" title="${esc(r.motivo || "")}">✕ ${esc(r.motivo || "Denegado")}</span>`}</td></tr>`).join("") || `<tr><td colspan="7" class="empty">Sin registros</td></tr>`;
         };
         ["#bq", "#ft", "#fr"].forEach((s) => (c.querySelector(s).oninput = draw));
         draw();
@@ -299,7 +303,7 @@ window.Admin = (function () {
           ${ps.map((p) => `<tr><td><b>${esc(p.visitante)}</b></td><td>${esc(TIPOS[p.tipo])}</td><td>${esc(p.unidad)}</td>
             <td class="small">${p.modalidad === "recurrente" ? (p.dias ? p.dias.map((d) => DIAS[d - 1]).join(", ") : "Todos los días") + (p.hora_inicio ? ` · ${p.hora_inicio.slice(0, 5)}–${p.hora_fin.slice(0, 5)}` : "") : "Una vez"}</td>
             <td class="small muted">hasta ${date(p.valido_hasta)}</td><td><code>${esc(p.codigo)}</code></td>
-            <td>${vig(p) ? `<span class="chip ok">Vigente</span>` : `<span class="chip">Inactivo</span>`}</td>
+            <td>${vig(p) ? `<span class="chip ok">✓ Vigente</span>` : `<span class="chip">Inactivo</span>`}</td>
             <td>${vig(p) ? `<button class="btn" data-x="${esc(p.id)}">Revocar</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="8" class="empty">Aún no hay pases</td></tr>`}
           </tbody></table></div></div>`;
         c.querySelectorAll("[data-x]").forEach((b) => (b.onclick = async () => { if (await confirmDlg("Revocar pase", "El código dejará de funcionar en caseta.")) { await API.cancelarPase(b.dataset.x); toast("Pase revocado"); refresh(); } }));
@@ -414,7 +418,7 @@ window.Admin = (function () {
         c.innerHTML = head("Paquetería", `${ps.filter((p) => !p.entregado_at).length} por entregar`) + `
           <div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>Recibido</th><th>Unidad</th><th>Paquetería</th><th>Descripción</th><th>Estado</th></tr></thead><tbody>
           ${ps.map((p) => `<tr><td class="small">${dateTime(p.created_at)}</td><td><b>${esc(p.unidad)}</b></td><td>${esc(p.paqueteria || "—")}</td><td>${esc(p.descripcion || "")}</td>
-            <td>${p.entregado_at ? `<span class="chip ok">Entregado a ${esc(p.entregado_a || "")}</span>` : `<span class="chip warn">En caseta</span>`}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">Aún no hay paquetes</td></tr>`}
+            <td>${p.entregado_at ? `<span class="chip ok">✓ Entregado a ${esc(p.entregado_a || "")}</span>` : `<span class="chip warn">En caseta</span>`}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">Aún no hay paquetes</td></tr>`}
           </tbody></table></div></div>`;
       },
 
@@ -422,7 +426,7 @@ window.Admin = (function () {
         const ts = await API.tickets();
         const col = (estado, label) => `<div><h3 style="margin-bottom:10px">${label} <span class="muted">(${ts.filter((t) => t.estado === estado).length})</span></h3><div class="grid">
           ${ts.filter((t) => t.estado === estado).map((t) => `<div class="card"><div class="row"><b>${esc(t.titulo)}</b><div class="spacer"></div><span class="chip">${esc(t.categoria || "General")}</span></div><div class="small muted" style="margin:4px 0 8px">${esc(t.unidad)} · ${date(t.created_at)}</div><div class="small" style="white-space:pre-wrap">${esc(t.descripcion || "")}</div>
-            ${t.respuesta ? `<div class="small" style="margin-top:8px;padding:8px;border-radius:8px;background:var(--accent-soft, rgba(45,212,191,.12))"><b>Respuesta:</b> ${esc(t.respuesta)}</div>` : ""}
+            ${t.respuesta ? `<div class="small" style="margin-top:8px;padding:8px;border-radius:8px;background:var(--accent-soft)"><b>Respuesta:</b> ${esc(t.respuesta)}</div>` : ""}
             <div class="row wrap" style="margin-top:12px"><span class="chip">${esc(t.responsable || "Sin asignar")}</span><div class="spacer"></div><button class="btn" data-t="${esc(t.id)}">Gestionar</button></div></div>`).join("") || `<div class="empty small">—</div>`}</div></div>`;
         c.innerHTML = head("Tickets", "Reportes de residentes con responsable y seguimiento") + `<div class="grid g3">${col("abierto", "Abiertos")}${col("en_proceso", "En proceso")}${col("cerrado", "Cerrados")}</div>`;
         c.querySelectorAll("[data-t]").forEach((b) => (b.onclick = async () => {
@@ -652,8 +656,8 @@ window.Admin = (function () {
         !k.unidades && `Crea las unidades del condominio en <a href="#" data-go="unidades">Unidades</a>.`,
         k.usuarios < 2 && `Agrega guardias y residentes en <a href="#" data-go="usuarios">Usuarios y roles</a>.`
       ].filter(Boolean);
-      c.innerHTML = head("Resumen", "Actividad de seguridad del condominio") + `
-        ${pendientes.length ? `<div class="card" style="margin-bottom:16px"><header><h2>Primeros pasos</h2></header>${pendientes.map((p) => `<div style="margin:4px 0">• ${p}</div>`).join("")}</div>` : ""}
+      c.innerHTML = head("Resumen", esc(hoyLargo()), `<button type="button" class="btn" id="vb2">Ver bitácora</button>${MOD.comunidad ? `<button type="button" class="btn primary" data-go="avisos">Nuevo comunicado</button>` : ""}`) + `
+        ${pendientes.length ? `<div class="card" style="margin-bottom:16px"><header><h2>Primeros pasos</h2></header>${pendientes.map((p) => `<p style="margin:6px 0">• ${p}</p>`).join("")}</div>` : ""}
         <div class="grid g4" style="margin-bottom:16px">
           <div class="card kpi"><div class="label">Accesos hoy</div><div class="value">${k.accesos_hoy}</div><div class="sub">Lecturas registradas en caseta</div></div>
           <div class="card kpi"><div class="label">Denegados hoy</div><div class="value" style="color:${k.denegados_hoy ? "var(--bad)" : "inherit"}">${k.denegados_hoy}</div><div class="sub">Códigos inválidos o vencidos</div></div>
@@ -672,24 +676,25 @@ window.Admin = (function () {
           <div class="row" style="gap:18px;padding:0 4px">${dias.map((d) => `<div class="small muted" style="flex:1;text-align:center">${DS[new Date(d.dia + "T12:00").getDay()]} ${+d.dia.slice(8)}</div>`).join("")}</div>
           <div class="legend"><span><i style="background:var(--accent)"></i>Permitidos</span><span><i style="background:var(--bad)"></i>Denegados</span></div>`}
         </div>
-        <div class="card" style="margin-top:16px"><header><h2>Últimos accesos de hoy</h2><div class="spacer"></div><button class="btn" id="vb">Ver bitácora</button></header>
-          <div class="table-wrap"><table class="table"><tbody>${accesos.map((a) => `<tr><td class="muted">${time(a.created_at)}</td><td><b>${esc(a.nombre)}</b></td><td>${esc(a.unidad)}</td><td>${a.permitido ? `<span class="chip">${esc(TIPOS[a.tipo])}</span>` : `<span class="chip bad">${esc(a.motivo || "Denegado")}</span>`}</td></tr>`).join("") || `<tr><td class="empty">Sin accesos hoy</td></tr>`}</tbody></table></div></div>`;
-      c.querySelector("#vb").onclick = () => go("accesos");
+        <div class="card" style="margin-top:16px"><header><h2>Accesos recientes</h2><div class="spacer"></div><button type="button" class="btn link" id="vb">Ver bitácora</button></header>
+          ${tablaAccesos(accesos)}</div>`;
+      c.querySelector("#vb").onclick = c.querySelector("#vb2").onclick = () => go("accesos");
       c.querySelectorAll("[data-go]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); go(a.dataset.go); }));
     }
 
     // Estado de cuenta + registrar pago manual
     async function estadoCuenta(u) {
       const cs = await API.cargos({ unidad_id: u.id });
-      const bg = h(`<div class="modal-bg"><div class="modal" style="max-width:640px">
-        <div class="row"><h2 style="margin:0">${esc(u.nombre)}</h2><div class="spacer"></div><button class="btn ghost" data-x>✕</button></div>
+      const bg = h(`<div class="modal-bg"><div class="modal" role="dialog" aria-modal="true" aria-label="Estado de cuenta" style="max-width:640px">
+        <div class="row"><h2 style="margin:0">${esc(u.nombre)}</h2><div class="spacer"></div><button type="button" class="btn ghost icon" data-x aria-label="Cerrar">✕</button></div>
         <p class="muted" style="margin:4px 0 14px">${esc(u.propietario || "")} · CLABE ${esc(u.clabe || "—")}</p>
-        <table class="table"><thead><tr><th>Concepto</th><th>Vence</th><th class="num">Monto</th><th>Estado</th><th></th></tr></thead><tbody>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Concepto</th><th>Vence</th><th class="num">Monto</th><th>Estado</th><th></th></tr></thead><tbody>
         ${cs.length ? "" : `<tr><td colspan="5" class="empty">Sin cargos</td></tr>`}${cs.map((x) => `<tr><td>${esc(x.concepto)}${x.extraordinaria ? ` <span class="chip">Extra</span>` : ""}</td><td class="small">${date(x.vence)}</td><td class="num">${money(x.monto)}</td>
-          <td>${x.estado === "pagado" ? `<span class="chip ok">Pagado</span>` : x.estado === "vencido" ? `<span class="chip bad">Vencido</span>` : `<span class="chip warn">Pendiente</span>`}</td>
+          <td>${x.estado === "pagado" ? `<span class="chip ok">✓ Pagado</span>` : x.estado === "vencido" ? `<span class="chip bad">✕ Vencido</span>` : `<span class="chip warn">Pendiente</span>`}</td>
           <td>${x.estado !== "pagado" ? `<button class="btn" data-c="${esc(x.id)}">Registrar pago</button>` : ""}</td></tr>`).join("")}
-        </tbody></table></div></div>`);
+        </tbody></table></div></div></div>`);
       bg.querySelector("[data-x]").onclick = () => bg.remove();
+      bg.addEventListener("keydown", (e) => { if (e.key === "Escape") bg.remove(); });
       bg.querySelectorAll("[data-c]").forEach((b) => (b.onclick = async () => {
         const cg = cs.find((x) => x.id === b.dataset.c);
         bg.remove();
@@ -701,6 +706,7 @@ window.Admin = (function () {
         if (d) { toast("Pago registrado"); refresh(); }
       }));
       document.body.appendChild(bg);
+      bg.querySelector("[data-x]").focus();
     }
 
     function downloadCsv(name, rows) {
@@ -711,7 +717,7 @@ window.Admin = (function () {
 
     async function renderAlertas() {
       const al = await API.alertas();
-      $("#alertas").innerHTML = al.map((a) => `<div class="alert-banner">⚠ Alerta de caseta: ${esc(a.mensaje)} <span class="small" style="opacity:.8">${time(a.created_at)}</span><div class="spacer"></div><button class="btn" data-at="${a.id}">Marcar atendida</button></div>`).join("");
+      $("#alertas").innerHTML = al.map((a) => `<div class="alert-banner">⚠ Alerta de caseta: ${esc(a.mensaje)} <span class="small" style="font-weight:500">${time(a.created_at)}</span><div class="spacer"></div><button type="button" class="btn sm" data-at="${esc(a.id)}">Marcar atendida</button></div>`).join("");
       $("#alertas").querySelectorAll("[data-at]").forEach((b) => (b.onclick = async () => { await API.atenderAlerta(+b.dataset.at || b.dataset.at); renderAlertas(); }));
     }
 

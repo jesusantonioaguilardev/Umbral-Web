@@ -41,6 +41,12 @@
   const TIPOS = { visita: "Visita", proveedor: "Proveedor", paqueteria: "Paquetería", airbnb: "Huésped", residente: "Residente" };
   const ROLES = { residente: "Residente", guardia: "Seguridad · Caseta", admin: "Administración" };
 
+  // Marca: casa con trazo, toma el color de --on-accent
+  const logo = `<div class="logo" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V9l8-6 8 6v12"/><path d="M10 21v-6h4v6"/></svg></div>`;
+
+  // Cierra un modal con Esc
+  const conEsc = (bg, close) => { const k = (e) => { if (e.key === "Escape") { document.removeEventListener("keydown", k); close(); } }; document.addEventListener("keydown", k); return () => document.removeEventListener("keydown", k); };
+
   function h(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild; }
 
   function toast(msg) {
@@ -58,15 +64,17 @@
         let control;
         if (f.type === "select") control = `<select id="${id}" name="${f.name}">${f.options.map((o) => `<option value="${esc(o.value)}" ${o.value == f.value ? "selected" : ""}>${esc(o.label)}</option>`).join("")}</select>`;
         else if (f.type === "textarea") control = `<textarea id="${id}" name="${f.name}" rows="4">${esc(f.value || "")}</textarea>`;
-        else if (f.type === "checkbox") control = `<label class="row" style="gap:8px;font-weight:500"><input type="checkbox" id="${id}" name="${f.name}" ${f.value ? "checked" : ""}> ${esc(f.text || "")}</label>`;
+        else if (f.type === "checkbox") control = `<label class="row" style="gap:8px"><input type="checkbox" id="${id}" name="${f.name}" ${f.value ? "checked" : ""}> ${esc(f.text || "")}</label>`;
         else if (f.type === "file") control = `<input class="input" id="${id}" name="${f.name}" type="file" ${f.accept ? `accept="${esc(f.accept)}"` : ""}>${f.hint ? `<div class="small muted" style="margin-top:4px">${esc(f.hint)}</div>` : ""}`;
         else if (f.type === "days") control = `<div class="days">${DIAS.map((d, i) => `<label><input type="checkbox" name="${f.name}" value="${i + 1}" ${(f.value || []).includes(i + 1) ? "checked" : ""}> ${d}</label>`).join("")}</div>`;
         else control = `<input class="input" id="${id}" name="${f.name}" type="${f.type || "text"}" value="${esc(f.value ?? "")}" ${f.required ? "required" : ""} ${f.step ? `step="${f.step}"` : ""} placeholder="${esc(f.placeholder || "")}">`;
         return `<div class="field">${f.label ? `<label for="${id}">${esc(f.label)}</label>` : ""}${control}</div>`;
       }).join("");
-      const bg = h(`<div class="modal-bg"><form class="modal"><h2>${esc(title)}</h2>${inputs}<div class="error"></div>
+      const bg = h(`<div class="modal-bg"><form class="modal" role="dialog" aria-modal="true" aria-labelledby="dlg_t"><h2 id="dlg_t">${esc(title)}</h2>${inputs}<div class="error"></div>
         <div class="actions"><button type="button" class="btn" data-x>Cancelar</button><button class="btn primary">${esc(submit)}</button></div></form></div>`);
-      const close = (v) => { bg.remove(); resolve(v); };
+      let quitarEsc = () => {};
+      const close = (v) => { quitarEsc(); bg.remove(); resolve(v); };
+      quitarEsc = conEsc(bg, () => close(null));
       bg.querySelector("[data-x]").onclick = () => close(null);
       bg.addEventListener("click", (e) => { if (e.target === bg) close(null); });
       bg.querySelector("form").onsubmit = async (e) => {
@@ -90,16 +98,20 @@
 
   function confirmDlg(title, text) {
     return new Promise((resolve) => {
-      const bg = h(`<div class="modal-bg"><div class="modal"><h2>${esc(title)}</h2><p class="muted">${esc(text)}</p>
+      const bg = h(`<div class="modal-bg"><div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="dlg_t"><h2 id="dlg_t">${esc(title)}</h2><p class="muted">${esc(text)}</p>
         <div class="actions"><button class="btn" data-n>Cancelar</button><button class="btn danger" data-y>Confirmar</button></div></div></div>`);
-      bg.querySelector("[data-n]").onclick = () => { bg.remove(); resolve(false); };
-      bg.querySelector("[data-y]").onclick = () => { bg.remove(); resolve(true); };
+      let quitarEsc = () => {};
+      const fin = (v) => { quitarEsc(); bg.remove(); resolve(v); };
+      quitarEsc = conEsc(bg, () => fin(false));
+      bg.querySelector("[data-n]").onclick = () => fin(false);
+      bg.querySelector("[data-y]").onclick = () => fin(true);
       document.body.appendChild(bg);
+      bg.querySelector("[data-y]").focus();
     });
   }
 
   function themeToggle() {
-    const b = h(`<button class="btn ghost" title="Cambiar tema" aria-label="Cambiar tema"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>`);
+    const b = h(`<button type="button" class="btn ghost icon" title="Cambiar tema" aria-label="Cambiar tema"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>`);
     b.onclick = () => {
       const r = document.documentElement;
       const dark = r.dataset.theme ? r.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
@@ -110,5 +122,5 @@
   }
   try { const t = localStorage.getItem("umbral_theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
 
-  window.UI = { esc, money, zona, time, date, dateTime, initials, h, toast, form, confirmDlg, themeToggle, DIAS, TIPOS, ROLES };
+  window.UI = { esc, logo, money, zona, time, date, dateTime, initials, h, toast, form, confirmDlg, themeToggle, DIAS, TIPOS, ROLES };
 })();

@@ -36,6 +36,10 @@ Cambios importantes de este proyecto. Formato basado en [Keep a Changelog](https
 - `CLAUDE.md` con el contexto del repositorio para los agentes.
 
 ### Cambiado
+- **Rediseño minimalista** del panel, la caseta, el inicio de sesión y `pase.html`: tipografía Inter, paleta sobria con un solo
+  acento, barra lateral clara, tablas y chips de estado con texto (✓/✕), sin sombras. La caseta muestra a la vez el resultado,
+  los esperados de hoy, la bitácora y los paquetes. Los ítems del menú son botones accesibles con teclado y Esc cierra los
+  modales. Ver también Umbral-App.
 - Los pagos que reporta el residente quedan **por confirmar** hasta que administración los revisa, y solo entonces el cargo se
   marca pagado. Así no se da por pagado un cargo solo con una clave de rastreo sin verificar. Los pagos que registra el
   administrador y los que ya existían cuentan como confirmados. Ver también Umbral-App (cargo *En revisión*).
