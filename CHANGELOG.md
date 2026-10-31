@@ -5,6 +5,20 @@ Cambios importantes de este proyecto. Formato basado en [Keep a Changelog](https
 ## [Sin publicar]
 
 ### Agregado
+- **Notificaciones push** para residentes: avisan cuando entra una visita, proveedor, paquetería o Airbnb de su unidad, cuando
+  caseta registra un paquete para su unidad y cuando administración publica un aviso (a todo el condominio o solo a la torre
+  del aviso). Ver también Umbral-App (push en Android). **(requiere ejecutar `supabase/schema.sql`)**
+  - Tabla `dispositivos`: los teléfonos donde cada usuario recibe push. Cada quien solo ve y borra los suyos, y si alguien
+    cambia o sale del condominio sus dispositivos se borran (trigger `limpiar_dispositivos`) para que no siga recibiendo
+    avisos del anterior.
+  - Tabla `notificaciones`: una fila por aviso y destinatario. Solo la llenan los triggers `notificar_acceso`,
+    `notificar_paquete` y `notificar_aviso`; el destinatario solo puede marcarla como leída (trigger `proteger_notificacion`).
+    Se publica en tiempo real.
+  - RPC `registrar_dispositivo(p_token, p_plataforma)` y `quitar_dispositivo(p_token)`, que la app llama al iniciar y al
+    cerrar sesión. Si un token ya era de otra cuenta (mismo teléfono, otra sesión), pasa a la cuenta actual.
+  - Edge Function `notificar`: la llama un Database Webhook en cada `INSERT` de `notificaciones`, envía con Firebase Cloud
+    Messaging y anota `enviada_at` o `error` en la fila. Se despliega y se configura a mano (secretos y webhook):
+    ver [`supabase/functions/notificar/README.md`](supabase/functions/notificar/README.md).
 - **Lista negra** en el menú Seguridad del panel de administración: agrega personas (y su placa, opcional) a las que no se
   debe dejar entrar, con motivo, y desactívalas o reactívalas cuando cambie la situación. **(requiere ejecutar `supabase/schema.sql`)**
 - La caseta niega automáticamente los pases de una persona en la lista negra con el motivo *"Persona restringida por

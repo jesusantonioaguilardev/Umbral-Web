@@ -44,7 +44,11 @@ y el esquema vive **solo aquí**. Guía para personas: [README.md](README.md). C
 - **Pase público:** la app arma `Config.URL_PASE_WEB + código` = `…/Umbral-Web/pase.html?c=<código>`. Si mueves o renombras
   `pase.html`, rompes los enlaces ya enviados por WhatsApp.
 - **RPC usadas:** web → `validar_pase`, `en_lista_negra`, `kpis_admin`, `kpis_accesos`, `emitir_cuotas`, `vincular_usuario`,
-  `desvincular_usuario`. App → `validar_pase`, `generar_codigo_personal`. Cambiar firma o forma del JSON exige revisar ambos repos.
+  `desvincular_usuario`. App → `validar_pase`, `generar_codigo_personal`, `registrar_dispositivo`, `quitar_dispositivo`.
+  Cambiar firma o forma del JSON exige revisar ambos repos.
+- **Push:** triggers `notificar_*` insertan en `notificaciones`; un Database Webhook (fuera de `schema.sql`) llama a la Edge
+  Function `supabase/functions/notificar`. `p_plataforma` ∈ `android|ios|web|desktop` (igual que `plataformaPush` de la app).
+  Las claves `datos` (`tipo`, `*_id`) las lee la app; no las renombres sin cambiarla.
 - **Pagos:** el residente inserta con `confirmado` forzado a `false` (trigger `proteger_pago`); el admin confirma con
   `update pagos set confirmado = true`; `on_pago` marca el cargo pagado. KPIs solo suman confirmados.
 - Columnas que lee la app (`Models.kt`) no se renombran sin cambiar la app.

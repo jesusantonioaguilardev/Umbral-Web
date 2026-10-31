@@ -34,6 +34,7 @@ js/admin.js               ← panel administrativo
 js/app.js                 ← arranque, login y ruteo por rol
 supabase/schema.sql       ← esquema completo, idempotente
 supabase/seed_pruebas.sql ← datos de prueba (solo local, NO versionado)
+supabase/functions/notificar/ ← Edge Function que envía el push (FCM) y su README de despliegue
 ```
 
 ## 1. Instalar la base de datos
@@ -71,6 +72,14 @@ select jobname, schedule, command from cron.job where jobname = 'umbral-vencidos
 
 Aunque el cron no haya corrido, `kpis_admin`, el panel y la app ya tratan como **vencido** cualquier cargo `pendiente`
 cuya fecha de vencimiento pasó. Así los números son correctos desde el primer día y el cron solo deja el estado guardado al día.
+
+### Notificaciones push
+
+`schema.sql` crea las tablas `dispositivos` y `notificaciones` y los triggers que llenan la bandeja, pero **el envío no queda
+activo solo con el SQL**: falta desplegar la Edge Function `notificar`, guardar sus secretos (cuenta de servicio de Firebase y
+`NOTIFICAR_SECRETO`) y crear el Database Webhook. Sigue [`supabase/functions/notificar/README.md`](supabase/functions/notificar/README.md).
+Sin eso, las filas se acumulan en `notificaciones` sin `enviada_at` y nadie recibe push. La app también necesita su
+`google-services.json` (ver el README de Umbral-App, sección *Notificaciones push (Android)*).
 
 ### Datos de prueba (`seed_pruebas.sql`)
 
@@ -189,6 +198,8 @@ Todas son `security definer` salvo `marcar_vencidos`. Ninguna se puede llamar si
 | `kpis_accesos` | — | `json` | Admin |
 | `kpis_admin` | — | `json` | Admin |
 | `emitir_cuotas` | `p_concepto text`, `p_monto numeric`, `p_vence date` | `int` (cargos creados) | Admin |
+| `registrar_dispositivo` | `p_token text`, `p_plataforma text` | `void` | Cualquier usuario con sesión y condominio (la app al iniciar sesión) |
+| `quitar_dispositivo` | `p_token text` | `void` | Cualquier usuario con sesión (la app al cerrar sesión) |
 | `marcar_vencidos` | — | `void` | Solo SQL Editor y `pg_cron` |
 | `umbral_setup` | `p_condominio text`, `p_ciudad text`, `p_email_admin text` | `uuid` (id del condominio) | Solo SQL Editor |
 
@@ -221,6 +232,14 @@ vencido un cargo `vencido` o `pendiente` con fecha pasada.
 
 **`emitir_cuotas(p_concepto, p_monto, p_vence)`** — Crea un cargo igual para cada unidad del condominio y devuelve cuántos creó.
 
+**`registrar_dispositivo(p_token, p_plataforma)`** — Guarda el token de push (FCM) del teléfono para quien llama.
+`p_plataforma` debe ser `android`, `ios`, `web` o `desktop`. Falla sin sesión, si la cuenta no tiene condominio o si el token
+viene vacío. Si el token ya existía con otra cuenta (mismo teléfono, otra sesión), pasa a la cuenta actual: un token pertenece
+a un solo perfil a la vez, para que nadie reciba los avisos de quien usó el teléfono antes.
+
+**`quitar_dispositivo(p_token)`** — Borra ese token solo si es de quien llama. La app la llama **antes** de cerrar sesión,
+porque sin sesión no sabría de quién es el token.
+
 **`marcar_vencidos()`** — Pasa a `vencido` los cargos `pendiente` con `vence` anterior a hoy (Hermosillo). La programa `pg_cron`;
 no está expuesta a la app ni al panel.
 
@@ -238,8 +257,26 @@ para que nadie se autonombre administrador desde la app.
 | `trg_pago` | `pagos` | Marca el cargo como pagado solo cuando el pago está confirmado |
 | `trg_proteger_ticket` | `tickets` | Impide al residente asignar estado, responsable o respuesta, o abrir tickets de otra unidad |
 | `trg_validar_reservacion` | `reservaciones` | Rechaza reservaciones traslapadas en la misma área y fecha, o de un área de otro condominio |
+| `trg_proteger_notificacion` (`proteger_notificacion`) | `notificaciones` | El destinatario solo puede cambiar `leida`; lo demás lo escribe la Edge Function `notificar` con la service role (sin `auth.uid()`) |
+| `trg_limpiar_dispositivos` (`limpiar_dispositivos`) | `profiles` | Si alguien cambia o sale de condominio, borra sus dispositivos del condominio anterior para que deje de recibir sus avisos |
 
-Además, `reservaciones` tiene la restricción `reservas_horas_validas` (`hora_fin > hora_inicio`).
+Además, `reservaciones` tiene la restricción `reservas_horas_validas` (`hora_fin > hora_inicio`) y `dispositivos` la
+restricción `dispositivos_plataforma_valida` (`android`, `ios`, `web` o `desktop`).
+
+### Triggers de notificación (push)
+
+Cada uno inserta una fila en `notificaciones` por destinatario; un **Database Webhook** en `INSERT` de esa tabla llama a la
+Edge Function `notificar`, que la envía por Firebase Cloud Messaging y anota `enviada_at` o `error`. Solo notifican a
+perfiles con rol `residente`. El webhook no está en `schema.sql`: se crea a mano (ver
+[`supabase/functions/notificar/README.md`](supabase/functions/notificar/README.md)).
+
+| Trigger | Tabla y evento | Cuándo | A quién | Título | `datos.tipo` |
+|---|---|---|---|---|---|
+| `trg_notificar_acceso` (`notificar_acceso`) | `accesos`, después de `INSERT` | Acceso permitido, con unidad y tipo distinto de `residente` (visita, proveedor, paquetería, Airbnb) | Residentes de la unidad | *Tu visita llegó* (cuerpo: nombre y punto de acceso) | `acceso` + `acceso_id` |
+| `trg_notificar_paquete` (`notificar_paquete`) | `paquetes`, después de `INSERT` | Paquete sin entregar | Residentes de la unidad | *Llegó un paquete* (cuerpo: paquetería y descripción) | `paquete` + `paquete_id` |
+| `trg_notificar_aviso` (`notificar_aviso`) | `avisos`, después de `INSERT` | Siempre | Residentes con unidad del condominio, o solo los de la torre del aviso si tiene `torre` | Título del aviso (con *Importante:* si lo es); cuerpo recortado a 240 caracteres | `aviso` + `aviso_id` |
+
+El acceso del propio residente (código personal) no notifica, para no avisarle de su propia entrada.
 
 ### Tablas y acceso por rol (RLS)
 
@@ -262,9 +299,13 @@ Todas las tablas tienen RLS y se filtran por el condominio de quien consulta.
 | `reservaciones` | Lee; crea y borra las de su unidad | Lee | Lee, crea y borra |
 | `encuestas` | Lee | Lee | Todo |
 | `votos` | Lee los del condominio; vota por su unidad si la encuesta no ha cerrado | Lee | Lee |
+| `dispositivos` (tokens de push) | Solo los suyos: lee, crea, edita y borra | Igual | Igual |
+| `notificaciones` | Solo las suyas: lee y marca leída. No crea ni borra | Igual | Igual |
 
 La vista `resultados_encuestas` usa `security_invoker`, así respeta el RLS de quien consulta.
-Tiempo real (`supabase_realtime`): `accesos`, `alertas`, `paquetes`, `tickets`, `avisos` y `lista_negra`.
+El registro normal de `dispositivos` va por `registrar_dispositivo`. En `notificaciones` solo escriben los triggers
+`notificar_*` y la Edge Function `notificar`; hoy solo los residentes reciben filas.
+Tiempo real (`supabase_realtime`): `accesos`, `alertas`, `paquetes`, `tickets`, `avisos`, `lista_negra` y `notificaciones`.
 
 ---
 
@@ -274,7 +315,9 @@ Tiempo real (`supabase_realtime`): `accesos`, `alertas`, `paquetes`, `tickets`, 
   proveedor con CLABEs por unidad (STP, Openpay, etc.) y registra el pago desde su webhook (una Edge Function de Supabase)
   validando el CEP de Banxico.
 - **Pago con tarjeta:** la app llama a `reportarPago` con método `tarjeta`; falta integrar un procesador antes de esa llamada.
-- **Notificaciones push** (paquete recibido, alerta de emergencia).
+- **Push en iOS:** la base de datos y la Edge Function ya lo soportan; falta la parte nativa de la app en Xcode
+  (ver `iosApp/PUSH_IOS.md` en Umbral-App).
+- **Push de alerta de emergencia:** las `alertas` no tienen trigger de notificación; hoy solo hay push de visita, paquete y aviso.
 - **Fotos** en paquetes y tickets: las columnas `foto_url` ya existen.
 - **Zona horaria configurable en SQL:** hoy `America/Hermosillo` está fija en `schema.sql`.
 
