@@ -762,7 +762,7 @@ begin
   if auth.uid() is null or my_rol() is distinct from 'residente' then return new; end if;
   perform pg_advisory_xact_lock(hashtext('alertas:' || auth.uid()::text));   -- dos inserts simultáneos no se saltan el conteo
   if (select count(*) from alertas where creado_por = auth.uid() and created_at > now() - interval '10 minutes') >= 2 then
-    raise exception 'Ya enviaste una alerta hace poco; caseta ya fue avisada';
+    raise exception 'Ya enviaste una alerta hace poco; tu alerta ya llegó a caseta y al condominio';
   end if;
   return new;
 end $$;

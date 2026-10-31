@@ -333,7 +333,7 @@ para que nadie se autonombre administrador desde la app.
 | `trg_validar_reservacion` | `reservaciones` | Rechaza reservaciones traslapadas en la misma área y fecha, o de un área de otro condominio |
 | `trg_proteger_notificacion` (`proteger_notificacion`) | `notificaciones` | El destinatario solo puede cambiar `leida`; lo demás lo escribe la Edge Function `notificar` con la service role (sin `auth.uid()`) |
 | `trg_limpiar_dispositivos` (`limpiar_dispositivos`) | `profiles` | Si alguien cambia o sale de condominio, borra sus dispositivos del condominio anterior para que deje de recibir sus avisos |
-| `trg_limitar_alertas` (`limitar_alertas`) | `alertas`, antes de `INSERT` | Un residente puede crear como máximo 2 alertas cada 10 minutos (*"Ya enviaste una alerta hace poco; caseta ya fue avisada"*); caseta y admin sin límite. Toma un candado por usuario para que dos envíos simultáneos no se salten el conteo |
+| `trg_limitar_alertas` (`limitar_alertas`) | `alertas`, antes de `INSERT` | Un residente puede crear como máximo 2 alertas cada 10 minutos (*"Ya enviaste una alerta hace poco; tu alerta ya llegó a caseta y al condominio"*); caseta y admin sin límite. Toma un candado por usuario para que dos envíos simultáneos no se salten el conteo |
 
 Además, `reservaciones` tiene la restricción `reservas_horas_validas` (`hora_fin > hora_inicio`) y `dispositivos` la
 restricción `dispositivos_plataforma_valida` (`android`, `ios`, `web` o `desktop`).

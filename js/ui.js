@@ -185,9 +185,11 @@
     return filas;
   }
 
-  // Descarga filas como CSV (coma, todo entre comillas, con BOM para que Excel lea acentos)
+  // Descarga filas como CSV (coma, todo entre comillas, con BOM para que Excel lea acentos).
+  // Los textos que empiezan con = + - @ o tabulador llevan ' delante para que Excel no los ejecute como fórmula.
+  const celdaSegura = (v) => (typeof v === "string" && /^[=+\-@\t\r]/.test(v) ? "'" + v : String(v ?? ""));
   function descargarCsv(nombre, rows) {
-    const csv = rows.map((r) => r.map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",")).join("\r\n");
+    const csv = rows.map((r) => r.map((v) => `"${celdaSegura(v).replace(/"/g, '""')}"`).join(",")).join("\r\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([BOM + csv], { type: "text/csv;charset=utf-8" })); a.download = nombre;
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
