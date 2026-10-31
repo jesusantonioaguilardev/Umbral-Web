@@ -44,8 +44,16 @@
   // Marca: casa con trazo, toma el color de --on-accent
   const logo = `<div class="logo" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V9l8-6 8 6v12"/><path d="M10 21v-6h4v6"/></svg></div>`;
 
-  // Cierra un modal con Esc
-  const conEsc = (bg, close) => { const k = (e) => { if (e.key === "Escape") { document.removeEventListener("keydown", k); close(); } }; document.addEventListener("keydown", k); return () => document.removeEventListener("keydown", k); };
+  // Cierra un modal con Esc; con modales apilados solo actúa el de arriba
+  const conEsc = (bg, close) => {
+    const k = (e) => {
+      if (e.key !== "Escape" || bg !== [...document.querySelectorAll(".modal-bg")].pop()) return;
+      e.stopImmediatePropagation(); close();
+    };
+    document.addEventListener("keydown", k);
+    return () => document.removeEventListener("keydown", k);
+  };
+  let dlgN = 0; // ids únicos para aria-labelledby cuando hay modales apilados
 
   function h(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild; }
 
@@ -70,11 +78,12 @@
         else control = `<input class="input" id="${id}" name="${f.name}" type="${f.type || "text"}" value="${esc(f.value ?? "")}" ${f.required ? "required" : ""} ${f.step ? `step="${f.step}"` : ""} placeholder="${esc(f.placeholder || "")}">`;
         return `<div class="field">${f.label ? `<label for="${id}">${esc(f.label)}</label>` : ""}${control}</div>`;
       }).join("");
-      const bg = h(`<div class="modal-bg"><form class="modal" role="dialog" aria-modal="true" aria-labelledby="dlg_t"><h2 id="dlg_t">${esc(title)}</h2>${inputs}<div class="error"></div>
+      const tid = "dlg_t" + ++dlgN;
+      const bg = h(`<div class="modal-bg"><form class="modal" role="dialog" aria-modal="true" aria-labelledby="${tid}"><h2 id="${tid}">${esc(title)}</h2>${inputs}<div class="error"></div>
         <div class="actions"><button type="button" class="btn" data-x>Cancelar</button><button class="btn primary">${esc(submit)}</button></div></form></div>`);
       let quitarEsc = () => {};
       const close = (v) => { quitarEsc(); bg.remove(); resolve(v); };
-      quitarEsc = conEsc(bg, () => close(null));
+      quitarEsc = conEsc(bg, () => { if (!bg.querySelector("button.primary").disabled) close(null); });
       bg.querySelector("[data-x]").onclick = () => close(null);
       bg.addEventListener("click", (e) => { if (e.target === bg) close(null); });
       bg.querySelector("form").onsubmit = async (e) => {
@@ -98,7 +107,8 @@
 
   function confirmDlg(title, text) {
     return new Promise((resolve) => {
-      const bg = h(`<div class="modal-bg"><div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="dlg_t"><h2 id="dlg_t">${esc(title)}</h2><p class="muted">${esc(text)}</p>
+      const tid = "dlg_t" + ++dlgN;
+      const bg = h(`<div class="modal-bg"><div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="${tid}"><h2 id="${tid}">${esc(title)}</h2><p class="muted">${esc(text)}</p>
         <div class="actions"><button class="btn" data-n>Cancelar</button><button class="btn danger" data-y>Confirmar</button></div></div></div>`);
       let quitarEsc = () => {};
       const fin = (v) => { quitarEsc(); bg.remove(); resolve(v); };
