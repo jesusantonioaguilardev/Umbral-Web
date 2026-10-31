@@ -2,7 +2,7 @@
    Resumen financiero, cobranza por unidad, pagos, egresos, accesos y
    proveedores, avisos, paquetería, tickets, reservaciones, encuestas y usuarios. */
 window.Admin = (function () {
-  const { esc, h, money, time, date, dateTime, toast, form, confirmDlg, TIPOS, ROLES, DIAS, initials } = UI;
+  const { esc, h, money, zona, time, date, dateTime, toast, form, confirmDlg, TIPOS, ROLES, DIAS, initials } = UI;
   const MESES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 
   // Módulos activos (config.js). Control de accesos siempre está activo.
@@ -19,6 +19,7 @@ window.Admin = (function () {
     { group: "Seguridad" },
     { id: "accesos", label: "Bitácora de accesos", icon: "⛨", mod: "accesos" },
     { id: "pases", label: "Pases y proveedores", icon: "▣", mod: "accesos" },
+    { id: "listaNegra", label: "Lista negra", icon: "⊘", mod: "accesos" },
     { group: "Comunidad" },
     { id: "avisos", label: "Comunicados", icon: "✉", mod: "comunidad" },
     { id: "paquetes", label: "Paquetería", icon: "▢", mod: "comunidad" },
@@ -38,7 +39,7 @@ window.Admin = (function () {
     const m = {}; rows.forEach((r) => { const k = key(r); if (k) m[k] = (m[k] || 0) + 1; });
     return Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, n);
   };
-  const horaPico = (rows) => { const t = top(rows, (r) => new Date(r.created_at).getHours() + ":00"); return t[0] ? `${t[0][0]} (${t[0][1]})` : "—"; };
+  const horaPico = (rows) => { const t = top(rows, (r) => zona.partes(r.created_at).h + ":00"); return t[0] ? `${t[0][0]} (${t[0][1]})` : "—"; };
   const suma = (rows) => rows.reduce((s, r) => s + +r.monto, 0);
   const sn = (b) => (b ? "Sí" : "No");
   const REPORTES = {
@@ -204,10 +205,11 @@ window.Admin = (function () {
         c.querySelectorAll("[data-f]").forEach((b) => (b.onclick = () => { filtro = b.dataset.f; draw(); }));
         c.querySelector("#bq").oninput = draw;
         draw();
-        const hoy = new Date(), vence = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 10).toISOString().slice(0, 10);
+        const { y, m } = zona.partes(), sig = new Date(Date.UTC(y, m, 1, 12)); // mes siguiente en la zona
+        const vence = sig.toISOString().slice(0, 8) + "10";
         c.querySelector("#em").onclick = async () => {
           if (!us.length) return toast("Primero crea las unidades");
-          const mesTxt = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 1).toLocaleDateString("es-MX", { month: "long", year: "numeric" });
+          const mesTxt = sig.toLocaleDateString("es-MX", { timeZone: "UTC", month: "long", year: "numeric" });
           const d = await form({ title: "Emitir cuota ordinaria", submit: "Emitir a todas las unidades", fields: [
             { name: "concepto", label: "Concepto", value: "Cuota ordinaria " + mesTxt, required: true },
             { name: "monto", label: "Monto por unidad (MXN)", type: "number", value: 2000, required: true },
@@ -265,7 +267,7 @@ window.Admin = (function () {
             { name: "concepto", label: "Concepto", required: true },
             { name: "categoria", label: "Categoría", type: "select", options: ["Servicios", "Mantenimiento", "Nómina", "Administración", "Otros"].map((x) => ({ value: x, label: x })) },
             { name: "monto", label: "Monto (MXN)", type: "number", required: true },
-            { name: "fecha", label: "Fecha", type: "date", value: new Date().toISOString().slice(0, 10) }],
+            { name: "fecha", label: "Fecha", type: "date", value: zona.hoy() }],
             onSubmit: (v) => API.crearEgreso({ ...v, monto: +v.monto }) });
           if (d) { toast("Egreso registrado"); refresh(); }
         };
@@ -274,19 +276,19 @@ window.Admin = (function () {
       async accesos(c) {
         const rows = await API.accesos({ limit: 500 });
         c.innerHTML = head("Bitácora de accesos", "Cada entrada con hora, unidad y quién autorizó", `<button class="btn" id="csv">Exportar CSV</button>`) + `
-          <div class="row wrap" style="margin-bottom:12px"><input class="input" id="bq" placeholder="Buscar nombre o unidad" style="max-width:280px">
+          <div class="row wrap" style="margin-bottom:12px"><input class="input" id="bq" placeholder="Buscar nombre, unidad o placa" style="max-width:280px">
             <select id="ft" style="max-width:180px"><option value="">Todos los tipos</option>${Object.entries(TIPOS).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}</select>
             <select id="fr" style="max-width:180px"><option value="">Todos</option><option value="1">Permitidos</option><option value="0">Denegados</option></select></div>
           <div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>Fecha</th><th>Nombre</th><th>Unidad</th><th>Tipo</th><th>Autorizó</th><th>Punto</th><th>Resultado</th></tr></thead><tbody id="tb"></tbody></table></div></div>`;
         const draw = () => {
           const qv = c.querySelector("#bq").value.toLowerCase(), ft = c.querySelector("#ft").value, fr = c.querySelector("#fr").value;
-          const f = rows.filter((r) => (r.nombre + " " + r.unidad).toLowerCase().includes(qv) && (!ft || r.tipo === ft) && (!fr || String(+r.permitido) === fr));
-          c.querySelector("#tb").innerHTML = f.map((r) => `<tr><td class="small">${dateTime(r.created_at)}</td><td><b>${esc(r.nombre)}</b></td><td>${esc(r.unidad)}</td><td>${esc(TIPOS[r.tipo] || r.tipo)}</td><td class="small muted">${esc(r.autorizo || "—")}</td><td class="small muted">${esc(r.punto || "")}</td>
+          const f = rows.filter((r) => (r.nombre + " " + r.unidad + " " + (r.placa || "")).toLowerCase().includes(qv) && (!ft || r.tipo === ft) && (!fr || String(+r.permitido) === fr));
+          c.querySelector("#tb").innerHTML = f.map((r) => `<tr><td class="small">${dateTime(r.created_at)}</td><td><b>${esc(r.nombre)}</b>${r.placa ? `<div class="small muted">Placa ${esc(r.placa)}</div>` : ""}</td><td>${esc(r.unidad)}</td><td>${esc(TIPOS[r.tipo] || r.tipo)}</td><td class="small muted">${esc(r.autorizo || "—")}</td><td class="small muted">${esc(r.punto || "")}</td>
             <td>${r.permitido ? `<span class="chip ok">Permitido</span>` : `<span class="chip bad" title="${esc(r.motivo || "")}">${esc(r.motivo || "Denegado")}</span>`}</td></tr>`).join("") || `<tr><td colspan="7" class="empty">Sin registros</td></tr>`;
         };
         ["#bq", "#ft", "#fr"].forEach((s) => (c.querySelector(s).oninput = draw));
         draw();
-        c.querySelector("#csv").onclick = () => downloadCsv("bitacora.csv", [["fecha", "nombre", "unidad", "tipo", "permitido", "motivo", "autorizo"], ...rows.map((r) => [r.created_at, r.nombre, r.unidad, r.tipo, r.permitido, r.motivo || "", r.autorizo || ""])]);
+        c.querySelector("#csv").onclick = () => downloadCsv("bitacora.csv", [["fecha", "nombre", "placa", "unidad", "tipo", "permitido", "motivo", "autorizo"], ...rows.map((r) => [r.created_at, r.nombre, r.placa || "", r.unidad, r.tipo, r.permitido, r.motivo || "", r.autorizo || ""])]);
       },
 
       async pases(c) {
@@ -309,13 +311,13 @@ window.Admin = (function () {
             { name: "dias", label: "Días permitidos", type: "days", value: [1, 3, 5] },
             { name: "hora_inicio", label: "Desde", type: "time", value: "08:00" },
             { name: "hora_fin", label: "Hasta", type: "time", value: "14:00" },
-            { name: "valido_hasta", label: "Vigente hasta", type: "date", value: new Date(Date.now() + 90 * 864e5).toISOString().slice(0, 10) }],
-            onSubmit: (v) => API.crearPase({ ...v, tipo: "proveedor", modalidad: "recurrente", usos_max: null, valido_hasta: new Date(v.valido_hasta + "T23:59").toISOString(), dias: v.dias.length ? v.dias : null }) });
+            { name: "valido_hasta", label: "Vigente hasta", type: "date", value: zona.sumarDias(zona.hoy(), 90) }],
+            onSubmit: (v) => API.crearPase({ ...v, tipo: "proveedor", modalidad: "recurrente", usos_max: null, valido_hasta: zona.aUTC(v.valido_hasta, "23:59"), dias: v.dias.length ? v.dias : null }) });
           if (d) { toast("Credencial creada"); refresh(); }
         };
         c.querySelector("#nv").onclick = async () => {
           if (!us.length) return toast("Primero crea una unidad");
-          const hoy = new Date().toISOString().slice(0, 10);
+          const hoy = zona.hoy();
           let creado = null;
           const d = await form({ title: "Pase de visita (un acceso)", submit: "Crear pase", fields: [
             { name: "visitante", label: "Nombre del visitante", required: true },
@@ -323,12 +325,44 @@ window.Admin = (function () {
             { name: "tipo", label: "Tipo", type: "select", options: Object.entries(TIPOS).filter(([k]) => k !== "residente").map(([value, label]) => ({ value, label })) },
             { name: "fecha", label: "Fecha de la visita", type: "date", value: hoy, required: true }],
             onSubmit: async (v) => {
-              const desde = new Date(v.fecha + "T00:00"), hasta = new Date(v.fecha + "T23:59");
               creado = await API.crearPase({ visitante: v.visitante.trim(), unidad_id: v.unidad_id, tipo: v.tipo, modalidad: "una_vez", usos_max: 1,
-                valido_desde: desde.toISOString(), valido_hasta: hasta.toISOString() });
+                valido_desde: zona.aUTC(v.fecha, "00:00"), valido_hasta: zona.aUTC(v.fecha, "23:59") });
             } });
           if (d && creado) { toast("Pase creado · código " + creado.codigo); refresh(); }
         };
+      },
+
+      async listaNegra(c) {
+        const xs = await API.listaNegra();
+        const act = xs.filter((x) => x.activo).length;
+        c.innerHTML = head("Lista negra", `${act} activas · ${xs.length - act} desactivadas`, `<button class="btn primary" id="nl">+ Agregar</button>`) + `
+          ${!xs.length ? `<div class="card empty">
+              <b>Aún no hay personas restringidas.</b><br>Agrega aquí a quien no debe entrar al condominio. La caseta negará sus pases y avisará al guardia si llega sin pase, por nombre o por placa.<br>
+              <button class="btn primary" id="nl2" style="margin-top:10px">+ Agregar a la lista</button></div>` : `
+          <div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>Nombre</th><th>Placa</th><th>Motivo</th><th>Agregada</th><th>Estado</th><th></th></tr></thead><tbody>
+          ${xs.map((x) => `<tr><td><b>${esc(x.nombre)}</b></td><td>${x.placa ? `<code>${esc(x.placa)}</code>` : `<span class="muted">—</span>`}</td><td class="small">${esc(x.motivo || "—")}</td><td class="small muted">${date(x.created_at)}</td>
+            <td>${x.activo ? `<span class="chip bad">⊘ Restringida</span>` : `<span class="chip">Desactivada</span>`}</td>
+            <td><button class="btn" data-ln="${esc(x.id)}">${x.activo ? "Desactivar" : "Reactivar"}</button></td></tr>`).join("")}
+          </tbody></table></div></div>`}`;
+        const nuevo = async () => {
+          const d = await form({ title: "Agregar a la lista negra", submit: "Agregar", fields: [
+            { name: "nombre", label: "Nombre completo", required: true },
+            { name: "placa", label: "Placa del vehículo (opcional)", placeholder: "ABC-123-D" },
+            { name: "motivo", label: "Motivo (opcional)", type: "textarea" }],
+            onSubmit: (v) => API.agregarListaNegra({ nombre: v.nombre.trim(), placa: v.placa.trim().toUpperCase() || null, motivo: v.motivo.trim() || null }) });
+          if (d) { toast("Agregada a la lista negra"); refresh(); }
+        };
+        c.querySelector("#nl").onclick = nuevo;
+        if (c.querySelector("#nl2")) c.querySelector("#nl2").onclick = nuevo;
+        c.querySelectorAll("[data-ln]").forEach((b) => (b.onclick = async () => {
+          const x = xs.find((y) => String(y.id) === b.dataset.ln);
+          const ok = x.activo
+            ? await confirmDlg("Desactivar restricción", `${x.nombre} podrá volver a entrar con pase o con autorización del residente.`)
+            : await confirmDlg("Reactivar restricción", `La caseta volverá a negar el acceso a ${x.nombre}.`);
+          if (!ok) return;
+          try { await API.cambiarListaNegra(x.id, !x.activo); toast(x.activo ? "Restricción desactivada" : "Restricción reactivada"); refresh(); }
+          catch (e) { toast("No se pudo actualizar: " + e.message); }
+        }));
       },
 
       async avisos(c) {
@@ -433,7 +467,7 @@ window.Admin = (function () {
           const d = await form({ title: "Nueva encuesta", submit: "Publicar", fields: [
             { name: "pregunta", label: "Pregunta", required: true },
             { name: "opciones", label: "Opciones (una por línea)", type: "textarea", value: "Sí\nNo" },
-            { name: "cierra", label: "Cierra", type: "date", value: new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10) }],
+            { name: "cierra", label: "Cierra", type: "date", value: zona.sumarDias(zona.hoy(), 7) }],
             onSubmit: (v) => { const op = v.opciones.split("\n").map((s) => s.trim()).filter(Boolean); if (op.length < 2) throw new Error("Agrega al menos 2 opciones"); return API.crearEncuesta({ pregunta: v.pregunta, opciones: op, cierra: v.cierra }); } });
           if (d) { toast("Encuesta publicada"); refresh(); }
         };
@@ -441,8 +475,7 @@ window.Admin = (function () {
 
       async reportes(c) {
         const un = await API.unidades();
-        const hoy = new Date(), iso = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
-        const inicioMes = iso(new Date(hoy.getFullYear(), hoy.getMonth(), 1));
+        const hoy = zona.hoy(), inicioMes = hoy.slice(0, 8) + "01"; // días civiles en la zona del condominio
         const disponibles = Object.entries(REPORTES).filter(([, r]) => MOD[r.mod]);
         let datos = null, def = null, filtros = null;
 
@@ -451,7 +484,7 @@ window.Admin = (function () {
             <form id="rf" class="grid" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));align-items:end">
               <div class="field" style="margin:0"><label for="r_tipo">Reporte</label><select id="r_tipo">${disponibles.map(([k, r]) => `<option value="${k}">${esc(r.titulo)}</option>`).join("")}</select></div>
               <div class="field" style="margin:0"><label for="r_desde">Desde</label><input class="input" type="date" id="r_desde" value="${inicioMes}"></div>
-              <div class="field" style="margin:0"><label for="r_hasta">Hasta</label><input class="input" type="date" id="r_hasta" value="${iso(hoy)}"></div>
+              <div class="field" style="margin:0"><label for="r_hasta">Hasta</label><input class="input" type="date" id="r_hasta" value="${hoy}"></div>
               <div class="field" style="margin:0"><label for="r_unidad">Unidad</label><select id="r_unidad"><option value="">Todas</option>${un.map((u) => `<option value="${esc(u.id)}">${esc(u.nombre)}</option>`).join("")}</select></div>
               <button class="btn primary">Generar</button>
             </form>
@@ -470,10 +503,10 @@ window.Admin = (function () {
         };
         $r("#r_tipo").onchange = desc; desc();
         c.querySelectorAll("[data-rng]").forEach((b) => (b.onclick = () => {
-          const y = hoy.getFullYear(), m = hoy.getMonth();
-          const R = { hoy: [hoy, hoy], 7: [new Date(hoy.getTime() - 6 * 864e5), hoy], mes: [new Date(y, m, 1), hoy],
-            mesant: [new Date(y, m - 1, 1), new Date(y, m, 0)], anio: [new Date(y, 0, 1), hoy] }[b.dataset.rng];
-          $r("#r_desde").value = iso(R[0]); $r("#r_hasta").value = iso(R[1]);
+          const finMesAnt = zona.sumarDias(inicioMes, -1);
+          const R = { hoy: [hoy, hoy], 7: [zona.sumarDias(hoy, -6), hoy], mes: [inicioMes, hoy],
+            mesant: [finMesAnt.slice(0, 8) + "01", finMesAnt], anio: [hoy.slice(0, 5) + "01-01", hoy] }[b.dataset.rng];
+          $r("#r_desde").value = R[0]; $r("#r_hasta").value = R[1];
           $r("#rf").requestSubmit();
         }));
 
@@ -505,7 +538,7 @@ window.Admin = (function () {
               ${datos.slice(0, 500).map((r) => `<tr>${def.cols.map(([, f]) => `<td>${esc(f(r))}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="${def.cols.length}" class="empty">Sin registros en este periodo</td></tr>`}
             </tbody></table></div>
             ${datos.length > 500 ? `<p class="small muted">Se muestran 500 de ${datos.length} filas. El CSV y el PDF incluyen todas.</p>` : ""}</div>`;
-          $r("#r_csv").onclick = () => downloadCsv(`reporte-${def.archivo}-${filtros.desde || iso(hoy)}.csv`,
+          $r("#r_csv").onclick = () => downloadCsv(`reporte-${def.archivo}-${filtros.desde || hoy}.csv`,
             [def.cols.map(([t]) => t), ...datos.map((r) => def.cols.map(([, f]) => f(r)))]);
           $r("#r_pdf").onclick = () => imprimir(resumen);
         }
