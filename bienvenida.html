@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Bienvenida · Umbral</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
+  <style>
+    .login .estado { margin-top: 4px; }
+    .login .cuenta { margin: -12px 0 20px; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+    .login .cuenta b { color: var(--text); font-weight: 500; }
+    .login .hint { margin-top: 4px; font-size: 12px; color: var(--muted); }
+    .login .ok-ico { width: 48px; height: 48px; border-radius: 99px; display: grid; place-items: center; background: var(--ok-soft); color: var(--ok); margin-bottom: 20px; }
+    .login .bad-ico { width: 48px; height: 48px; border-radius: 99px; display: grid; place-items: center; background: var(--bad-soft); color: var(--bad); margin-bottom: 20px; font-weight: 700; font-size: 20px; }
+  </style>
+  <!-- Guarda el enlace antes de que supabase-js lo lea y limpie la URL -->
+  <script>window.UMBRAL_ENLACE = { hash: location.hash.slice(1), search: location.search.slice(1) };</script>
+</head>
+<body>
+  <div class="login-wrap"><main class="login card" id="app" aria-live="polite">
+    <div class="brand"><div class="logo" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V9l8-6 8 6v12"/><path d="M10 21v-6h4v6"/></svg></div>Umbral</div>
+    <h1>Un momento…</h1>
+    <p class="lead">Estamos revisando tu enlace.</p>
+  </main></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/ui.js"></script>
+  <script>
+    /* Bienvenida: el usuario llega desde el correo de invitación (o de recuperación) con la sesión en la URL,
+       elige su nombre y contraseña, y queda listo para entrar en la app o en el panel. */
+    (function () {
+      const { esc, h } = UI;
+      const app = document.getElementById("app");
+      const marca = app.querySelector(".brand").outerHTML;
+      const L = window.UMBRAL_ENLACE || { hash: "", search: "" };
+      const P = new URLSearchParams(L.search);
+      new URLSearchParams(L.hash).forEach((v, k) => P.set(k, v));
+      const tipo = P.get("type") || "invite";
+      const recuperar = tipo === "recovery";
+      const pinta = (html) => { app.innerHTML = marca + html; };
+
+      function invalido(titulo, texto) {
+        document.title = "Enlace no válido · Umbral";
+        pinta(`<div class="bad-ico" aria-hidden="true">!</div><h1>${esc(titulo)}</h1><p class="lead">${esc(texto)}</p>
+          <a class="btn lg" href="index.html" style="width:100%">Ir al panel</a>
+          <p class="foot">Umbral · Control de accesos y comunidad</p>`);
+      }
+
+      async function iniciar() {
+        if (!window.API) return invalido("Falta configurar Supabase", "Esta página no puede conectarse. Avisa a la administración del condominio.");
+        const codigoError = P.get("error_code") || P.get("error");
+        if (codigoError) {
+          const vencido = /expired/i.test(codigoError + " " + (P.get("error_description") || ""));
+          return invalido(vencido ? "El enlace ya venció" : "El enlace no es válido",
+            "Los enlaces del correo sirven una sola vez y vencen pronto. Pide a la administración que te envíe una invitación nueva" + (recuperar ? " o que te reenvíe el enlace para cambiar tu contraseña." : "."));
+        }
+        const traeEnlace = P.get("access_token") || P.get("token_hash");
+        if (!traeEnlace) return invalido("El enlace no es válido", "Abre esta página desde el botón del correo de invitación. Si no te llegó, pide a la administración que te la envíe de nuevo.");
+        let sesion = null;
+        try { sesion = await API.sesionEnlace({ token_hash: P.get("token_hash"), type: P.get("type") }); } catch (e) {}
+        try { history.replaceState(null, "", location.pathname); } catch (e) {} // no dejar tokens en la barra ni en el historial
+        if (!sesion) return invalido("El enlace ya venció", "Los enlaces del correo sirven una sola vez y vencen pronto. Pide a la administración que te envíe uno nuevo.");
+        formulario(sesion.user);
+      }
+
+      async function formulario(user) {
+        let perfil = null;
+        try { perfil = await API.perfilPropio(user.id); } catch (e) {}
+        const email = user.email || perfil?.email || "";
+        const actual = String(user.user_metadata?.nombre || perfil?.nombre || "").trim();
+        const pedirNombre = !actual || actual.toLowerCase() === email.split("@")[0].toLowerCase();
+        document.title = (recuperar ? "Nueva contraseña" : "Crea tu contraseña") + " · Umbral";
+        pinta(`
+          <h1>${recuperar ? "Elige una nueva contraseña" : "Te damos la bienvenida"}</h1>
+          <p class="lead">${recuperar ? "Escríbela dos veces para confirmarla." : "Crea tu contraseña para entrar en la app Umbral o en el panel."}</p>
+          ${email ? `<p class="cuenta">Cuenta: <b>${esc(email)}</b></p>` : ""}
+          <form id="bf" novalidate>
+            <input type="email" name="username" autocomplete="username" value="${esc(email)}" hidden>
+            ${pedirNombre ? `<div class="field"><label for="nm">Tu nombre</label><input class="input lg" id="nm" required autocomplete="name" maxlength="80" placeholder="Como te verán en caseta"></div>` : ""}
+            <div class="field"><label for="p1">Nueva contraseña</label><input class="input lg" id="p1" type="password" required minlength="8" autocomplete="new-password" aria-describedby="p1h"><div class="hint" id="p1h">Mínimo 8 caracteres.</div></div>
+            <div class="field"><label for="p2">Repite la contraseña</label><input class="input lg" id="p2" type="password" required minlength="8" autocomplete="new-password"></div>
+            <div class="error" role="alert" id="er"></div>
+            <button class="btn primary lg" style="width:100%;margin-top:8px" id="ok">${recuperar ? "Guardar contraseña" : "Crear contraseña"}</button>
+          </form>
+          <p class="foot">Umbral · Control de accesos y comunidad</p>`);
+        const $ = (s) => app.querySelector(s);
+        ($("#nm") || $("#p1")).focus();
+        $("#bf").onsubmit = async (e) => {
+          e.preventDefault();
+          const nombre = $("#nm") ? $("#nm").value.replace(/\s+/g, " ").trim() : "";
+          const p1 = $("#p1").value, p2 = $("#p2").value, er = $("#er");
+          er.textContent = "";
+          if ($("#nm") && nombre.length < 2) { er.textContent = "Escribe tu nombre"; return $("#nm").focus(); }
+          if (p1.length < 8) { er.textContent = "La contraseña debe tener al menos 8 caracteres"; return $("#p1").focus(); }
+          if (p1 !== p2) { er.textContent = "Las contraseñas no coinciden"; return $("#p2").focus(); }
+          const b = $("#ok"), txt = b.textContent;
+          b.disabled = true; b.textContent = "Guardando…";
+          try {
+            await API.definirPassword(p1, nombre || null);
+            await API.cerrarSesionEnlace().catch(() => {});
+            listo();
+          } catch (err) { er.textContent = err.message; b.disabled = false; b.textContent = txt; }
+        };
+      }
+
+      function listo() {
+        document.title = "Listo · Umbral";
+        pinta(`<div class="ok-ico" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></div>
+          <h1 tabindex="-1" id="lt">Listo</h1>
+          <p class="lead">Ya puedes entrar en la app Umbral o en el panel con tu correo y tu nueva contraseña.</p>
+          <a class="btn primary lg" href="index.html" style="width:100%">Ir al panel</a>
+          <p class="foot">Residentes: descarga la app Umbral en tu celular y entra con estos mismos datos.</p>`);
+        app.querySelector("#lt").focus();
+      }
+
+      iniciar();
+    })();
+  </script>
+</body>
+</html>

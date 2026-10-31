@@ -7,50 +7,45 @@ window.Caseta = (function () {
   const COMUNIDAD = !!((window.UMBRAL_CONFIG || {}).MODULOS || {}).comunidad;
 
   function mount({ me, root, logout }) {
-    let scanner = null, lastCode = "", lastAt = 0, tab = "bitacora", unidades = [];
+    let scanner = null, lastCode = "", lastAt = 0, unidades = [];
     const timers = [];
+    const ICO_OK = `<span class="ico" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>`;
+    const ICO_NO = `<span class="ico" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M7 7l10 10M17 7L7 17"/></svg></span>`;
+    const ESPERA = `<div class="espera">Esperando lectura…<div class="small" style="margin-top:4px">Escanea el QR o escribe el código del pase.</div></div>`;
 
     const el = h(`
       <div>
-        <div id="alertas"></div>
-        <div class="topbar">
-          <div class="brand"><div class="logo">U</div><span>Caseta · ${esc(PUNTO)}</span></div>
+        <div id="alertas" role="alert"></div>
+        <header class="topbar">
+          <div class="brand">${UI.logo}<span>Caseta · ${esc(PUNTO)}</span></div>
           <span class="chip accent" id="modo">En línea</span>
-          <div class="spacer"></div>
-          <strong id="reloj" style="font-variant-numeric:tabular-nums;font-size:18px"></strong>
-          <button class="sos" id="sos">⚠ Emergencia</button>
-          <div class="user-pill"><span class="avatar">${initials(me.nombre)}</span><span class="small">${esc(me.nombre)}<br><span class="muted">Guardia</span></span></div>
+          <span class="reloj" id="reloj" aria-label="Hora actual"></span>
+          ${!COMUNIDAD ? "" : `<button type="button" class="btn" id="paq">Recibir paquete</button>`}
+          <button type="button" class="btn primary" id="manual">Visita sin pase</button>
+          <button type="button" class="sos" id="sos" title="Envía una notificación de emergencia a todo el condominio">⚠ Emergencia<span class="sos-extra"> · avisar a todos</span></button>
           <span id="theme"></span>
-          <button class="btn" id="salir">Salir</button>
-        </div>
-        <div class="caseta">
-          <section class="grid" style="align-content:start">
+          <div class="user-pill" title="${esc(me.nombre)}"><span class="avatar" aria-hidden="true">${esc(initials(me.nombre))}</span><span class="small">${esc(me.nombre)}<br><span class="muted">Guardia</span></span></div>
+          <button type="button" class="btn" id="salir">Salir</button>
+        </header>
+        <main class="caseta">
+          <section aria-label="Validar acceso">
+            <form class="code-entry" id="cf">
+              <label for="code" class="sr-only">Código del pase</label>
+              <input class="input" id="code" placeholder="Escanea o escribe el código" autocomplete="off" maxlength="40">
+              <button class="btn accent xl">Validar</button>
+            </form>
+            <div class="result" id="result" aria-live="assertive">${ESPERA}</div>
             <div class="card">
-              <header><h2>Validar acceso</h2><div class="spacer"></div><button class="btn" id="cam">📷 Activar cámara</button></header>
-              <div class="scanner"><div id="reader"></div><div class="placeholder" id="ph">Escanea el QR del visitante<br><span class="small">o escribe el código abajo</span></div></div>
-              <form class="code-entry" id="cf">
-                <input class="input" id="code" placeholder="CÓDIGO" autocomplete="off" maxlength="40">
-                <button class="btn primary lg">Validar</button>
-              </form>
-            </div>
-            <div class="result" id="result"><div class="muted">Esperando lectura…</div></div>
-            <div class="grid ${COMUNIDAD ? "g2" : ""}">
-              <button class="btn lg" id="manual">+ Visita sin pase</button>
-              ${!COMUNIDAD ? "" : `<button class="btn lg" id="paq">📦 Recibir paquete</button>`}
+              <header><h2>Lector QR</h2><div class="spacer"></div><button type="button" class="btn" id="cam">📷 Activar cámara</button></header>
+              <div class="scanner"><div id="reader"></div><div class="placeholder" id="ph">Activa la cámara y apunta al QR del visitante</div></div>
             </div>
           </section>
-          <section class="card" style="align-self:start">
-            <header>
-              <div class="row wrap" id="tabs">
-                <button class="btn" data-tab="bitacora">Bitácora de hoy</button>
-                <button class="btn" data-tab="esperados">Esperados hoy</button>
-                ${!COMUNIDAD ? "" : `<button class="btn" data-tab="paquetes">Paquetes</button>`}
-              </div>
-            </header>
-            <div class="row small muted" id="stats" style="margin-bottom:8px"></div>
-            <div id="panel" class="log-list"></div>
-          </section>
-        </div>
+          <aside aria-label="Actividad de hoy">
+            <section class="card pane"><header><h2>Esperados hoy</h2><div class="spacer"></div><span class="small muted" id="s_esperados"></span></header><div class="log-list" id="p_esperados"></div></section>
+            <section class="card pane"><header><h2>Bitácora</h2><div class="spacer"></div><span class="small muted" id="s_bitacora"></span></header><div class="log-list" id="p_bitacora"></div></section>
+            ${!COMUNIDAD ? "" : `<section class="card pane"><header><h2>Paquetes</h2><div class="spacer"></div><span class="small muted" id="s_paquetes"></span></header><div class="log-list" id="p_paquetes"></div></section>`}
+          </aside>
+        </main>
       </div>`);
     root.appendChild(el);
     el.querySelector("#theme").appendChild(UI.themeToggle());
@@ -65,20 +60,21 @@ window.Caseta = (function () {
       const cod = String(raw).replace(/^UMBRAL:/i, "").trim().toUpperCase();
       if (!cod) return;
       const r = $("#result");
-      r.className = "result"; r.innerHTML = `<div class="muted">Validando ${esc(cod)}…</div>`;
+      r.className = "result"; r.innerHTML = `<div class="espera">Validando ${esc(cod)}…</div>`;
       try {
         const res = await API.validarPase(cod, PUNTO);
         r.className = "result " + (res.permitido ? "ok" : "bad");
         const horario = res.modalidad === "recurrente" && (res.dias || res.hora_inicio)
-          ? `<div class="meta small">Horario: ${res.dias ? res.dias.map((d) => DIAS[d - 1]).join(", ") : "Todos los días"}${res.hora_inicio ? " · " + res.hora_inicio + " a " + res.hora_fin : ""}</div>` : "";
+          ? `<div class="meta small">Horario: ${res.dias ? res.dias.map((d) => DIAS[d - 1]).join(", ") : "Todos los días"}${res.hora_inicio ? " · " + esc(res.hora_inicio) + " a " + esc(res.hora_fin) : ""}</div>` : "";
+        const meta = [res.tipo ? esc(TIPOS[res.tipo] || res.tipo) : "", res.unidad ? esc(res.unidad) : "", res.autorizo ? "Autorizó " + esc(res.autorizo) : ""].filter(Boolean).join(" · ");
         r.innerHTML = `
-          <span class="chip ${res.permitido ? "ok" : "bad"}" style="font-size:14px">${res.permitido ? "✓ Acceso válido · Levantar pluma" : "✕ Acceso denegado"}</span>
+          <div class="status">${res.permitido ? ICO_OK + "Acceso válido · Levantar pluma" : ICO_NO + "Acceso denegado"}</div>
           <div class="big">${esc(res.visitante || "Código " + cod)}</div>
-          <div class="meta">${res.tipo ? esc(TIPOS[res.tipo]) + " · " : ""}${res.unidad ? esc(res.unidad) : ""}${res.autorizo ? " · Autorizó: " + esc(res.autorizo) : ""}</div>
-          ${res.motivo ? `<div style="margin-top:8px;font-weight:700;color:var(--bad)">${esc(res.motivo)}</div>` : ""}${horario}`;
+          ${meta ? `<div class="meta">${meta}</div>` : ""}
+          ${res.motivo ? `<div class="motivo">${esc(res.motivo)}</div>` : ""}${horario}`;
         beep(res.permitido);
       } catch (e) {
-        r.className = "result bad"; r.innerHTML = `<b>Error:</b> ${esc(e.message)}`;
+        r.className = "result bad"; r.innerHTML = `<div class="status">${ICO_NO}No se pudo validar</div><div class="meta">${esc(e.message)}</div><div class="meta small">Revisa la conexión e intenta de nuevo.</div>`;
       }
       $("#code").value = "";
     }
@@ -110,43 +106,49 @@ window.Caseta = (function () {
       scanner = null; $("#ph").classList.remove("hidden"); $("#cam").textContent = "📷 Activar cámara";
     }
 
-    // ---------- Paneles ----------
-    el.querySelectorAll("[data-tab]").forEach((b) => (b.onclick = () => { tab = b.dataset.tab; render(); }));
-
-    async function render() {
-      el.querySelectorAll("[data-tab]").forEach((b) => b.classList.toggle("primary", b.dataset.tab === tab));
-      const p = $("#panel");
-      if (tab === "bitacora") {
+    // ---------- Paneles (columna lateral) ----------
+    const PANES = {
+      async bitacora() {
         const rows = await API.accesos({ soloHoy: true });
         const den = rows.filter((r) => !r.permitido).length;
-        $("#stats").innerHTML = `<span class="chip">${rows.length} registros</span><span class="chip ok">${rows.length - den} permitidos</span><span class="chip bad">${den} denegados</span>`;
-        p.innerHTML = rows.length ? rows.map(logItem).join("") : `<div class="empty">Sin registros hoy</div>`;
-      } else if (tab === "esperados") {
+        $("#s_bitacora").textContent = `${rows.length} hoy · ${den} denegados`;
+        return rows.length ? rows.map(logItem).join("") : `<div class="empty">Sin registros hoy. Cada lectura aparecerá aquí.</div>`;
+      },
+      async esperados() {
         const rows = await API.esperadosHoy();
-        $("#stats").innerHTML = `<span class="chip">${rows.length} con pase vigente hoy</span>`;
-        p.innerHTML = rows.length ? rows.map((r) => `
-          <div class="log-item"><span class="chip">${esc(TIPOS[r.tipo])}</span>
-            <div><b>${esc(r.visitante)}</b><div class="small muted">${esc(r.unidad)}${r.hora_inicio ? " · " + r.hora_inicio + "–" + r.hora_fin : ""}</div></div>
-            <button class="btn" data-cod="${esc(r.codigo)}">Validar</button></div>`).join("") : `<div class="empty">Nadie programado</div>`;
-        p.querySelectorAll("[data-cod]").forEach((b) => (b.onclick = () => validar(b.dataset.cod)));
-      } else {
+        $("#s_esperados").textContent = `${rows.length} con pase`;
+        return rows.length ? rows.map((r) => `
+          <div class="log-item"><span class="dot" aria-hidden="true"></span>
+            <div><div>${esc(r.visitante)}</div><div class="small muted">${esc(TIPOS[r.tipo] || r.tipo)} · ${esc(r.unidad)}${r.hora_inicio ? " · " + esc(String(r.hora_inicio).slice(0, 5)) + "–" + esc(String(r.hora_fin).slice(0, 5)) : ""}</div></div>
+            <button type="button" class="btn sm" data-cod="${esc(r.codigo)}">Validar</button></div>`).join("") : `<div class="empty">Nadie programado para hoy</div>`;
+      },
+      async paquetes() {
         const rows = await API.paquetes({ pendientes: true });
-        $("#stats").innerHTML = `<span class="chip warn">${rows.length} por entregar</span>`;
-        p.innerHTML = rows.length ? rows.map((r) => `
+        $("#s_paquetes").textContent = `${rows.length} por entregar`;
+        return rows.length ? rows.map((r) => `
           <div class="log-item"><time>${time(r.created_at)}</time>
-            <div><b>${esc(r.unidad)}</b><div class="small muted">${esc(r.paqueteria || "")} · ${esc(r.descripcion || "")}</div></div>
-            <button class="btn" data-ent="${esc(r.id)}">Entregar</button></div>`).join("") : `<div class="empty">Sin paquetes pendientes</div>`;
-        p.querySelectorAll("[data-ent]").forEach((b) => (b.onclick = async () => {
-          const d = await form({ title: "Entregar paquete", fields: [{ name: "a", label: "Recibe (nombre)", required: true }], submit: "Entregar",
-            onSubmit: (v) => API.entregarPaquete(b.dataset.ent, v.a) });
-          if (d) { toast("Paquete entregado"); render(); }
-        }));
+            <div><div>${esc(r.unidad)}</div><div class="small muted">${esc(r.paqueteria || "")}${r.descripcion ? " · " + esc(r.descripcion) : ""}</div></div>
+            <button type="button" class="btn sm" data-ent="${esc(r.id)}">Entregar</button></div>`).join("") : `<div class="empty">Sin paquetes pendientes</div>`;
       }
+    };
+    async function render(cual) {
+      const ks = cual ? [cual] : Object.keys(PANES).filter((k) => k !== "paquetes" || COMUNIDAD);
+      await Promise.all(ks.map(async (k) => {
+        const p = $("#p_" + k); if (!p) return;
+        try { p.innerHTML = await PANES[k](); }
+        catch (e) { p.innerHTML = `<div class="empty error">No se pudo cargar: ${esc(e.message)}</div>`; }
+      }));
+      el.querySelectorAll("[data-cod]").forEach((b) => (b.onclick = () => validar(b.dataset.cod)));
+      el.querySelectorAll("[data-ent]").forEach((b) => (b.onclick = async () => {
+        const d = await form({ title: "Entregar paquete", fields: [{ name: "a", label: "Recibe (nombre)", required: true }], submit: "Entregar",
+          onSubmit: (v) => API.entregarPaquete(b.dataset.ent, v.a) });
+        if (d) { toast("Paquete entregado"); render("paquetes"); }
+      }));
     }
     const logItem = (r) => `
-      <div class="log-item"><time>${time(r.created_at)}</time>
-        <div><b>${esc(r.nombre)}</b><div class="small muted">${esc(r.unidad || "—")}${r.placa ? " · Placa " + esc(r.placa) : ""}${r.autorizo ? " · " + esc(r.autorizo) : ""}${r.motivo ? " · " + esc(r.motivo) : ""}</div></div>
-        <span class="chip ${r.permitido ? "" : "bad"}">${r.permitido ? esc(TIPOS[r.tipo] || r.tipo) : "Denegado"}</span></div>`;
+      <div class="log-item"><span class="dot ${r.permitido ? "ok" : "bad"}" aria-hidden="true"></span>
+        <div><div>${esc(r.nombre)}</div><div class="small muted">${r.permitido ? "✓ " + esc(TIPOS[r.tipo] || r.tipo) : `<span class="bad-txt">✕ ${esc(r.motivo || "Denegado")}</span>`} · ${esc(r.unidad || "—")}${r.placa ? " · Placa " + esc(r.placa) : ""}${r.autorizo ? " · " + esc(r.autorizo) : ""}</div></div>
+        <time>${time(r.created_at)}</time></div>`;
 
     // ---------- Acciones ----------
     const unidadOpts = () => unidades.map((u) => ({ value: u.id, label: u.nombre + (u.propietario ? " · " + u.propietario : "") }));
@@ -177,7 +179,7 @@ window.Caseta = (function () {
           return API.registrarManual({ nombre, placa, unidad_id: v.unidad_id, tipo: v.tipo, permitido, motivo, punto: PUNTO, ...(negadoPorLista ? { autorizo: "Guardia · lista negra" } : {}) });
         }
       });
-      if (d) { toast(negadoPorLista ? "Registrado como acceso negado" : "Registrado en bitácora"); tab = "bitacora"; render(); }
+      if (d) { toast(negadoPorLista ? "Registrado como acceso negado" : "Registrado en bitácora"); render("bitacora"); }
     };
     if ($("#paq")) $("#paq").onclick = async () => {
       const d = await form({
@@ -189,27 +191,21 @@ window.Caseta = (function () {
         ],
         onSubmit: (v) => API.registrarPaquete(v)
       });
-      if (d) { toast("Paquete registrado · residente notificado"); tab = "paquetes"; render(); }
+      if (d) { toast("Paquete registrado · residente notificado"); render("paquetes"); }
     };
-    $("#sos").onclick = async () => {
-      const d = await form({ title: "Alerta de emergencia", submit: "Enviar alerta", fields: [{ name: "m", label: "Mensaje para residentes y administración", type: "textarea", value: "Emergencia en caseta. Favor de mantenerse en sus domicilios." }],
-        onSubmit: (v) => API.crearAlerta(v.m) });
-      if (d) toast("Alerta enviada");
-    };
+    // Emergencia: el insert en alertas manda push a todo el condominio (residentes, caseta y administración)
+    $("#sos").onclick = async () => { if (await UI.emergencia({ mensaje: "Emergencia en caseta. Favor de mantenerse en sus domicilios." })) renderAlertas(); };
     $("#salir").onclick = async () => { await stopCam(); logout(); };
 
-    async function renderAlertas() {
-      const al = await API.alertas();
-      $("#alertas").innerHTML = al.map((a) => `<div class="alert-banner">⚠ ${esc(a.mensaje)} <span class="small" style="opacity:.8">${time(a.created_at)}</span><div class="spacer"></div><button class="btn" data-at="${a.id}">Atendida</button></div>`).join("");
-      $("#alertas").querySelectorAll("[data-at]").forEach((b) => (b.onclick = async () => { await API.atenderAlerta(+b.dataset.at || b.dataset.at); renderAlertas(); }));
-    }
+    const renderAlertas = () => UI.bannerAlertas($("#alertas"));
 
     // Tiempo real
     const unsub = API.subscribe((tabla) => {
       if (tabla === "alertas") renderAlertas();
-      if ((tabla === "accesos" && tab === "bitacora") || (tabla === "paquetes" && tab === "paquetes")) render();
+      if (tabla === "accesos") render("bitacora");
+      if (tabla === "paquetes") render("paquetes");
     });
-    timers.push(setInterval(render, 60000));
+    timers.push(setInterval(() => render(), 60000));
 
     API.unidades().then((u) => (unidades = u));
     render(); renderAlertas();

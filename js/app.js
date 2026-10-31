@@ -9,17 +9,18 @@
     cleanup?.(); cleanup = null;
     root.innerHTML = "";
     const el = h(`
-      <div class="login-wrap"><div class="login card">
-        <div class="brand" style="margin-bottom:18px"><div class="logo">U</div>Umbral</div>
-        <h1 style="margin-bottom:4px">Panel del condominio</h1>
-        <p class="muted" style="margin:0 0 18px">Caseta y administración en un solo lugar. Lo que ves depende de tu rol.</p>
+      <div class="login-wrap"><main class="login card">
+        <div class="brand">${UI.logo}Umbral</div>
+        <h1>Bienvenido</h1>
+        <p class="lead">Entra con la cuenta de caseta o administración que te dio tu condominio.</p>
         <form id="lf">
-          <div class="field"><label for="em">Correo</label><input class="input" id="em" type="email" required autocomplete="username"></div>
-          <div class="field"><label for="pw">Contraseña</label><input class="input" id="pw" type="password" required autocomplete="current-password"></div>
-          <div class="error">${esc(error)}</div>
-          <button class="btn primary lg" style="width:100%">Entrar</button>
+          <div class="field"><label for="em">Correo</label><input class="input lg" id="em" type="email" required autocomplete="username"></div>
+          <div class="field"><label for="pw">Contraseña</label><input class="input lg" id="pw" type="password" required autocomplete="current-password"></div>
+          <div class="error" role="alert">${esc(error)}</div>
+          <button class="btn primary lg" style="width:100%;margin-top:8px">Entrar</button>
         </form>
-      </div></div>`);
+        <p class="foot">¿No tienes cuenta? Pídela a la administración.<br>Umbral · Control de accesos y comunidad</p>
+      </main></div>`);
     root.appendChild(el);
     const go = async (email, pw) => {
       el.querySelector(".error").textContent = "";
@@ -43,12 +44,12 @@
   function renderSinConfig() {
     root.innerHTML = "";
     root.appendChild(h(`
-      <div class="login-wrap"><div class="login card">
-        <div class="brand" style="margin-bottom:18px"><div class="logo">U</div>Umbral</div>
-        <h1 style="margin-bottom:8px">Falta configurar Supabase</h1>
-        <p class="muted" style="margin:0">Escribe <b>SUPABASE_URL</b> y <b>SUPABASE_ANON_KEY</b> en <b>js/config.js</b> y recarga la página.
+      <div class="login-wrap"><main class="login card">
+        <div class="brand">${UI.logo}Umbral</div>
+        <h1>Falta configurar Supabase</h1>
+        <p class="lead" style="margin-bottom:0">Escribe <b>SUPABASE_URL</b> y <b>SUPABASE_ANON_KEY</b> en <b>js/config.js</b> y recarga la página.
         Si ya lo hiciste, revisa que la librería de Supabase pueda cargarse (conexión a internet).</p>
-      </div></div>`));
+      </main></div>`));
   }
 
   if (!window.API) renderSinConfig();

@@ -3,6 +3,7 @@
    proveedores, avisos, paquetería, tickets, reservaciones, encuestas y usuarios. */
 window.Admin = (function () {
   const { esc, h, money, zona, time, date, dateTime, toast, form, confirmDlg, TIPOS, ROLES, DIAS, initials } = UI;
+  const RE_CORREO = /^[^\s@,;<>"]+@[^\s@,;<>"]+\.[^\s@,;<>"]{2,}$/;
   const MESES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 
   // Módulos activos (config.js). Control de accesos siempre está activo.
@@ -56,7 +57,7 @@ window.Admin = (function () {
         ["Creó", (r) => r.persona || ""], ["Código", (r) => r.codigo]],
       resumen: (d) => [["Pases emitidos", d.length], ["Usados al menos una vez", cuenta(d, (r) => r.usos > 0), "ok"], ["Nunca usados", cuenta(d, (r) => r.usos === 0)],
         ["Cancelados", cuenta(d, (r) => !r.activo), "bad"], ["Proveedores recurrentes", cuenta(d, (r) => r.modalidad === "recurrente")]] },
-    alertas: { mod: "accesos", archivo: "alertas", titulo: "Alertas de emergencia", desc: "Alertas enviadas desde caseta y si ya fueron atendidas.",
+    alertas: { mod: "accesos", archivo: "alertas", titulo: "Alertas de emergencia", desc: "Alertas de emergencia enviadas desde caseta o administración y si ya fueron atendidas.",
       cols: [["Fecha y hora", (r) => dateTime(r.created_at)], ["Mensaje", (r) => r.mensaje], ["Envió", (r) => r.persona || ""], ["Atendida", (r) => sn(r.atendida)]],
       resumen: (d) => [["Alertas", d.length], ["Atendidas", cuenta(d, (r) => r.atendida), "ok"], ["Pendientes", cuenta(d, (r) => !r.atendida), "bad"]] },
     usuarios: { mod: "accesos", archivo: "usuarios", titulo: "Directorio de usuarios", sinFechas: true, desc: "Personas con acceso al condominio, su rol y unidad.",
@@ -94,48 +95,52 @@ window.Admin = (function () {
   };
 
   function mount({ me, root, logout }) {
-    let page = "resumen";
+    let page = "resumen", avisoUsuarios = ""; // avisoUsuarios: resultado de la última invitación, se muestra al recargar la vista
     try { page = sessionStorage.getItem("umbral_admin_page") || page; } catch (e) {}
 
     const el = h(`
       <div class="admin">
         <aside class="sidebar" id="sb">
-          <div class="brand"><div class="logo">U</div>Umbral</div>
-          <div class="small" style="padding:0 10px 10px;color:#8fa9a5">${esc(me.condominio?.nombre || "")}</div>
-          <nav class="nav" id="nav"></nav>
+          <div class="sb-head">
+            <div class="brand">${UI.logo}<span>Umbral<span class="sub">${esc(me.condominio?.nombre || "Administración")}</span></span></div>
+            <button type="button" class="btn ghost icon menu-btn" id="menu" aria-label="Abrir menú" aria-expanded="false" aria-controls="sbBody">☰</button>
+          </div>
+          <div class="sb-body" id="sbBody">
+            <nav class="nav" id="nav" aria-label="Menú"></nav>
+            <div class="sb-foot">
+              <div class="user-pill"><span class="avatar" aria-hidden="true">${esc(initials(me.nombre))}</span><span class="small">${esc(me.nombre)}<br><span class="muted">Administración</span></span></div>
+              <div class="row"><span id="theme"></span><button type="button" class="btn" id="salir">Salir</button></div>
+            </div>
+          </div>
         </aside>
         <div class="main">
-          <div class="topbar">
-            <button class="btn ghost menu-btn" id="menu">☰</button>
-            <strong id="ttl"></strong>
-            <div class="spacer"></div>
-            <span id="theme"></span>
-            <div class="user-pill"><span class="avatar">${initials(me.nombre)}</span><span class="small">${esc(me.nombre)}<br><span class="muted">Administración</span></span></div>
-            <button class="btn" id="salir">Salir</button>
-          </div>
-          <div id="alertas"></div>
-          <div class="content" id="content"></div>
+          <div id="alertas" role="alert"></div>
+          <main class="content" id="content"></main>
         </div>
       </div>`);
     root.appendChild(el);
     el.querySelector("#theme").appendChild(UI.themeToggle());
     const $ = (s) => el.querySelector(s);
     $("#salir").onclick = logout;
-    $("#menu").onclick = () => $("#sb").classList.toggle("open");
+    $("#menu").onclick = () => $("#menu").setAttribute("aria-expanded", $("#sb").classList.toggle("open"));
 
-    $("#nav").innerHTML = PAGES.map((p) => p.group ? `<div class="group">${p.group}</div>` : `<a data-p="${p.id}"><span style="width:18px;text-align:center">${p.icon}</span>${p.label}<span class="badge hidden" data-b="${p.id}"></span></a>`).join("");
+    $("#nav").innerHTML = PAGES.map((p) => p.group ? `<div class="group">${esc(p.group)}</div>` : `<button type="button" class="nav-item" data-p="${esc(p.id)}">${esc(p.label)}<span class="badge hidden" data-b="${esc(p.id)}"></span></button>`).join("");
     $("#nav").querySelectorAll("[data-p]").forEach((a) => (a.onclick = () => go(a.dataset.p)));
 
     function go(p) {
       page = p; try { sessionStorage.setItem("umbral_admin_page", p); } catch (e) {}
-      $("#sb").classList.remove("open");
-      $("#nav").querySelectorAll("[data-p]").forEach((a) => a.classList.toggle("active", a.dataset.p === p));
-      $("#ttl").textContent = PAGES.find((x) => x.id === p)?.label || "";
+      $("#sb").classList.remove("open"); $("#menu").setAttribute("aria-expanded", "false");
+      $("#nav").querySelectorAll("[data-p]").forEach((a) => { a.classList.toggle("active", a.dataset.p === p); a.toggleAttribute("aria-current", a.dataset.p === p); });
+      document.title = (PAGES.find((x) => x.id === p)?.label || "Panel") + " · Umbral";
       const c = $("#content"); c.innerHTML = `<div class="empty">Cargando…</div>`;
-      (VIEWS[p] || VIEWS.resumen)(c).catch((e) => (c.innerHTML = `<div class="card error">${esc(e.message)}</div>`));
+      (VIEWS[p] || VIEWS.resumen)(c).catch((e) => (c.innerHTML = `<div class="card error"><b>No se pudo cargar esta sección.</b> ${esc(e.message)} <button type="button" class="btn sm" id="retry" style="margin-left:8px">Reintentar</button></div>`, c.querySelector("#retry").onclick = refresh));
     }
     const refresh = () => go(page);
-    const head = (title, sub, actions = "") => `<div class="page-head"><div><h1>${esc(title)}</h1>${sub ? `<div class="muted">${sub}</div>` : ""}</div><div class="spacer"></div>${actions}</div>`;
+    const head = (title, sub, actions = "") => `<div class="page-head"><div><h1>${esc(title)}</h1>${sub ? `<p class="sub">${sub}</p>` : ""}</div><div class="spacer"></div>${actions ? `<div class="acts">${actions}</div>` : ""}</div>`;
+    // Fecha larga de hoy en la zona del condominio: "Viernes 31 de octubre"
+    const hoyLargo = () => { const t = new Date().toLocaleDateString("es-MX", { timeZone: zona.tz, weekday: "long", day: "numeric", month: "long" }).replace(",", ""); return t.charAt(0).toUpperCase() + t.slice(1); };
+    const resultado = (a) => (a.permitido ? `<span class="chip ok">✓ Permitido</span>` : `<span class="chip bad">✕ ${esc(a.motivo || "Denegado")}</span>`);
+    const tablaAccesos = (accesos) => `<div class="table-wrap"><table class="table"><thead><tr><th>Hora</th><th>Persona</th><th>Unidad</th><th>Tipo</th><th>Resultado</th></tr></thead><tbody>${accesos.map((a) => `<tr><td class="muted num" style="text-align:left">${time(a.created_at)}</td><td><b>${esc(a.nombre)}</b></td><td>${esc(a.unidad)}</td><td class="muted">${esc(TIPOS[a.tipo] || a.tipo)}</td><td>${resultado(a)}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">Sin accesos hoy. Las lecturas de caseta aparecerán aquí.</td></tr>`}</tbody></table></div>`;
     const opts = (arr, l, v = "id") => arr.map((x) => ({ value: x[v], label: typeof l === "function" ? l(x) : x[l] }));
 
     async function badges() {
@@ -154,7 +159,7 @@ window.Admin = (function () {
         const meses = k.meses || [];
         const max = Math.max(1, ...meses.flatMap((m) => [+m.ingresos, +m.egresos]));
         const bal = meses.length ? +meses[meses.length - 1].ingresos - +meses[meses.length - 1].egresos : 0;
-        c.innerHTML = head("Resumen", "Información financiera y operativa lista para el comité") + `
+        c.innerHTML = head("Resumen", esc(hoyLargo()), BTN_SOS) + `
           <div class="grid g4" style="margin-bottom:16px">
             <div class="card kpi"><div class="label">Cobrado en el mes</div><div class="value">${money(k.cobrado_mes)}</div><div class="sub">Pagos SPEI, tarjeta y efectivo</div></div>
             <div class="card kpi"><div class="label">Unidades al corriente</div><div class="value">${pct}%</div><div class="progress" style="margin-top:8px"><div style="width:${pct}%"></div></div><div class="sub">${k.unidades_al_corriente} de ${k.unidades}</div></div>
@@ -168,7 +173,7 @@ window.Admin = (function () {
               <div class="bars ${max <= 1 ? "hidden" : ""}">${meses.map((m) => { const [, mm] = m.mes.split("-");
                 return `<div class="m"><div class="pair"><div class="bar in" style="height:${(m.ingresos / max) * 100}%" title="Ingresos ${money(m.ingresos)}"></div><div class="bar out" style="height:${(m.egresos / max) * 100}%" title="Egresos ${money(m.egresos)}"></div></div></div>`; }).join("")}</div>
               <div class="row" style="gap:18px;padding:0 4px">${meses.map((m) => `<div class="small muted" style="flex:1;text-align:center">${MESES[+m.mes.split("-")[1] - 1]}</div>`).join("")}</div>
-              <div class="legend"><span><i style="background:var(--accent)"></i>Ingresos</span><span><i style="background:#c5ccd3"></i>Egresos</span></div>
+              <div class="legend"><span><i style="background:var(--accent)"></i>Ingresos</span><span><i style="background:var(--border-strong)"></i>Egresos</span></div>
             </div>
             <div class="grid" style="align-content:start">
               <div class="card kpi"><div class="label">Accesos hoy</div><div class="value">${k.accesos_hoy}</div></div>
@@ -176,9 +181,10 @@ window.Admin = (function () {
               <div class="card kpi"><div class="label">Paquetes por entregar</div><div class="value">${k.paquetes_pendientes}</div></div>
             </div>
           </div>
-          <div class="card" style="margin-top:16px"><header><h2>Últimos accesos</h2><div class="spacer"></div><button class="btn" id="vb">Ver bitácora</button></header>
-            <div class="table-wrap"><table class="table"><tbody>${accesos.map((a) => `<tr><td class="muted">${time(a.created_at)}</td><td><b>${esc(a.nombre)}</b></td><td>${esc(a.unidad)}</td><td>${a.permitido ? `<span class="chip">${esc(TIPOS[a.tipo])}</span>` : `<span class="chip bad">Denegado</span>`}</td></tr>`).join("") || `<tr><td class="empty">Sin accesos hoy</td></tr>`}</tbody></table></div></div>`;
+          <div class="card" style="margin-top:16px"><header><h2>Accesos recientes</h2><div class="spacer"></div><button type="button" class="btn link" id="vb">Ver bitácora</button></header>
+            ${tablaAccesos(accesos)}</div>`;
         c.querySelector("#vb").onclick = () => go("accesos");
+        sosAdmin(c);
       },
 
       async cobranza(c) {
@@ -198,7 +204,7 @@ window.Admin = (function () {
           c.querySelector("#tb").innerHTML = rows.map((u) => `<tr>
             <td><b>${esc(u.nombre)}</b></td><td>${esc(u.propietario || "—")}</td><td class="small muted">${esc(u.clabe || "—")}</td>
             <td class="num">${money(u.pendiente)}</td><td class="num" style="color:${u.vencido ? "var(--bad)" : "inherit"}">${money(u.vencido)}</td>
-            <td>${u.estado === "al_corriente" ? `<span class="chip ok">Al corriente</span>` : u.estado === "vencido" ? `<span class="chip bad">Vencida</span>` : `<span class="chip warn">Pendiente</span>`}</td>
+            <td>${u.estado === "al_corriente" ? `<span class="chip ok">✓ Al corriente</span>` : u.estado === "vencido" ? `<span class="chip bad">✕ Vencida</span>` : `<span class="chip warn">Pendiente</span>`}</td>
             <td><button class="btn" data-u="${esc(u.id)}">Estado de cuenta</button></td></tr>`).join("") || `<tr><td colspan="7" class="empty">Sin resultados</td></tr>`;
           c.querySelectorAll("[data-u]").forEach((b) => (b.onclick = () => estadoCuenta(us.find((u) => u.id === b.dataset.u))));
         };
@@ -245,7 +251,7 @@ window.Admin = (function () {
         c.innerHTML = head("Pagos recibidos", `${ps.length} pagos · ${money(total)} confirmados${porConfirmar ? ` · ${porConfirmar} por confirmar` : ""}`, `<button class="btn" id="csv">Exportar CSV</button>`) + `
           <div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>Fecha</th><th>Unidad</th><th>Método</th><th>Referencia / CEP</th><th class="num">Monto</th><th>Estado</th></tr></thead><tbody>
           ${ps.map((p) => `<tr><td>${dateTime(p.created_at)}</td><td><b>${esc(p.unidad)}</b></td><td><span class="chip">${esc(p.metodo.toUpperCase())}</span></td><td class="small muted">${esc(p.referencia || "—")}</td><td class="num">${money(p.monto)}</td>
-            <td>${p.confirmado ? `<span class="chip ok">Confirmado</span>` : `<button class="btn" data-ok="${esc(p.id)}">Confirmar</button>`}</td></tr>`).join("") || `<tr><td colspan="6" class="empty">Aún no hay pagos</td></tr>`}
+            <td>${p.confirmado ? `<span class="chip ok">✓ Confirmado</span>` : `<button class="btn sm" data-ok="${esc(p.id)}">Confirmar</button>`}</td></tr>`).join("") || `<tr><td colspan="6" class="empty">Aún no hay pagos</td></tr>`}
           </tbody></table></div></div>`;
         c.querySelectorAll("[data-ok]").forEach((b) => (b.onclick = async () => {
           const p = ps.find((x) => x.id === b.dataset.ok);
@@ -284,7 +290,7 @@ window.Admin = (function () {
           const qv = c.querySelector("#bq").value.toLowerCase(), ft = c.querySelector("#ft").value, fr = c.querySelector("#fr").value;
           const f = rows.filter((r) => (r.nombre + " " + r.unidad + " " + (r.placa || "")).toLowerCase().includes(qv) && (!ft || r.tipo === ft) && (!fr || String(+r.permitido) === fr));
           c.querySelector("#tb").innerHTML = f.map((r) => `<tr><td class="small">${dateTime(r.created_at)}</td><td><b>${esc(r.nombre)}</b>${r.placa ? `<div class="small muted">Placa ${esc(r.placa)}</div>` : ""}</td><td>${esc(r.unidad)}</td><td>${esc(TIPOS[r.tipo] || r.tipo)}</td><td class="small muted">${esc(r.autorizo || "—")}</td><td class="small muted">${esc(r.punto || "")}</td>
-            <td>${r.permitido ? `<span class="chip ok">Permitido</span>` : `<span class="chip bad" title="${esc(r.motivo || "")}">${esc(r.motivo || "Denegado")}</span>`}</td></tr>`).join("") || `<tr><td colspan="7" class="empty">Sin registros</td></tr>`;
+            <td>${r.permitido ? `<span class="chip ok">✓ Permitido</span>` : `<span class="chip bad" title="${esc(r.motivo || "")}">✕ ${esc(r.motivo || "Denegado")}</span>`}</td></tr>`).join("") || `<tr><td colspan="7" class="empty">Sin registros</td></tr>`;
         };
         ["#bq", "#ft", "#fr"].forEach((s) => (c.querySelector(s).oninput = draw));
         draw();
@@ -299,7 +305,7 @@ window.Admin = (function () {
           ${ps.map((p) => `<tr><td><b>${esc(p.visitante)}</b></td><td>${esc(TIPOS[p.tipo])}</td><td>${esc(p.unidad)}</td>
             <td class="small">${p.modalidad === "recurrente" ? (p.dias ? p.dias.map((d) => DIAS[d - 1]).join(", ") : "Todos los días") + (p.hora_inicio ? ` · ${p.hora_inicio.slice(0, 5)}–${p.hora_fin.slice(0, 5)}` : "") : "Una vez"}</td>
             <td class="small muted">hasta ${date(p.valido_hasta)}</td><td><code>${esc(p.codigo)}</code></td>
-            <td>${vig(p) ? `<span class="chip ok">Vigente</span>` : `<span class="chip">Inactivo</span>`}</td>
+            <td>${vig(p) ? `<span class="chip ok">✓ Vigente</span>` : `<span class="chip">Inactivo</span>`}</td>
             <td>${vig(p) ? `<button class="btn" data-x="${esc(p.id)}">Revocar</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="8" class="empty">Aún no hay pases</td></tr>`}
           </tbody></table></div></div>`;
         c.querySelectorAll("[data-x]").forEach((b) => (b.onclick = async () => { if (await confirmDlg("Revocar pase", "El código dejará de funcionar en caseta.")) { await API.cancelarPase(b.dataset.x); toast("Pase revocado"); refresh(); } }));
@@ -414,7 +420,7 @@ window.Admin = (function () {
         c.innerHTML = head("Paquetería", `${ps.filter((p) => !p.entregado_at).length} por entregar`) + `
           <div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>Recibido</th><th>Unidad</th><th>Paquetería</th><th>Descripción</th><th>Estado</th></tr></thead><tbody>
           ${ps.map((p) => `<tr><td class="small">${dateTime(p.created_at)}</td><td><b>${esc(p.unidad)}</b></td><td>${esc(p.paqueteria || "—")}</td><td>${esc(p.descripcion || "")}</td>
-            <td>${p.entregado_at ? `<span class="chip ok">Entregado a ${esc(p.entregado_a || "")}</span>` : `<span class="chip warn">En caseta</span>`}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">Aún no hay paquetes</td></tr>`}
+            <td>${p.entregado_at ? `<span class="chip ok">✓ Entregado a ${esc(p.entregado_a || "")}</span>` : `<span class="chip warn">En caseta</span>`}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">Aún no hay paquetes</td></tr>`}
           </tbody></table></div></div>`;
       },
 
@@ -422,7 +428,7 @@ window.Admin = (function () {
         const ts = await API.tickets();
         const col = (estado, label) => `<div><h3 style="margin-bottom:10px">${label} <span class="muted">(${ts.filter((t) => t.estado === estado).length})</span></h3><div class="grid">
           ${ts.filter((t) => t.estado === estado).map((t) => `<div class="card"><div class="row"><b>${esc(t.titulo)}</b><div class="spacer"></div><span class="chip">${esc(t.categoria || "General")}</span></div><div class="small muted" style="margin:4px 0 8px">${esc(t.unidad)} · ${date(t.created_at)}</div><div class="small" style="white-space:pre-wrap">${esc(t.descripcion || "")}</div>
-            ${t.respuesta ? `<div class="small" style="margin-top:8px;padding:8px;border-radius:8px;background:var(--accent-soft, rgba(45,212,191,.12))"><b>Respuesta:</b> ${esc(t.respuesta)}</div>` : ""}
+            ${t.respuesta ? `<div class="small" style="margin-top:8px;padding:8px;border-radius:8px;background:var(--accent-soft)"><b>Respuesta:</b> ${esc(t.respuesta)}</div>` : ""}
             <div class="row wrap" style="margin-top:12px"><span class="chip">${esc(t.responsable || "Sin asignar")}</span><div class="spacer"></div><button class="btn" data-t="${esc(t.id)}">Gestionar</button></div></div>`).join("") || `<div class="empty small">—</div>`}</div></div>`;
         c.innerHTML = head("Tickets", "Reportes de residentes con responsable y seguimiento") + `<div class="grid g3">${col("abierto", "Abiertos")}${col("en_proceso", "En proceso")}${col("cerrado", "Cerrados")}</div>`;
         c.querySelectorAll("[data-t]").forEach((b) => (b.onclick = async () => {
@@ -571,24 +577,49 @@ window.Admin = (function () {
         const [us, un] = await Promise.all([API.usuarios(), API.unidades()]);
         const unidadOpts = [{ value: "", label: "— Sin unidad —" }, ...opts(un, "nombre")];
         const rolOpts = Object.entries(ROLES).map(([value, label]) => ({ value, label }));
+        const aviso = avisoUsuarios; avisoUsuarios = "";
         c.innerHTML = head("Usuarios y roles", "El rol define qué ve cada persona: Caseta, Administración o la app de residente",
-          `<button class="btn primary" id="nv">+ Agregar usuario</button>`) + `
+          `<button type="button" class="btn" id="imp">Importar CSV</button><button type="button" class="btn" id="vc">Vincular cuenta existente</button><button type="button" class="btn primary" id="nv">+ Invitar usuario</button>`) + `
+          ${aviso ? `<div class="notice ok" role="status">✓ ${esc(aviso)}</div>` : ""}
           <div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>Nombre</th><th>Correo</th><th>Rol</th><th>Unidad</th><th></th></tr></thead><tbody>
-          ${us.map((u) => `<tr><td><div class="row"><span class="avatar">${initials(u.nombre)}</span><b>${esc(u.nombre)}</b></div></td><td class="small muted">${esc(u.email || "—")}</td>
+          ${us.map((u) => `<tr><td><div class="row"><span class="avatar" aria-hidden="true">${esc(initials(u.nombre))}</span><b>${esc(u.nombre)}</b></div></td><td class="small muted">${esc(u.email || "—")}</td>
             <td><span class="chip ${u.rol === "admin" ? "accent" : u.rol === "guardia" ? "warn" : ""}">${esc(ROLES[u.rol])}</span></td><td>${esc(u.unidad || "—")}</td>
-            <td><div class="row" style="justify-content:flex-end"><button class="btn" data-u="${esc(u.id)}">Editar</button>${u.id !== me.id ? `<button class="btn ghost" data-q="${esc(u.id)}">Quitar</button>` : ""}</div></td></tr>`).join("") || `<tr><td colspan="5" class="empty">Sin usuarios</td></tr>`}
+            <td><div class="row" style="justify-content:flex-end"><button class="btn" data-u="${esc(u.id)}">Editar</button>${u.id !== me.id ? `<button class="btn ghost" data-q="${esc(u.id)}">Quitar</button>` : ""}</div></td></tr>`).join("") || `<tr><td colspan="5" class="empty">Aún no hay usuarios. Invita al primero con “+ Invitar usuario” o importa un CSV.</td></tr>`}
           </tbody></table></div></div>
-          <p class="small muted">Para agregar a alguien: crea su cuenta en Supabase → Authentication → <b>Add user</b> (con “Auto Confirm User”)
-          y luego usa <b>+ Agregar usuario</b> con ese mismo correo para asignarle rol y unidad.</p>`;
-        c.querySelector("#nv").onclick = async () => {
-          const d = await form({ title: "Agregar usuario al condominio", submit: "Agregar", fields: [
-            { name: "email", label: "Correo de la cuenta", type: "email", required: true },
-            { name: "nombre", label: "Nombre (opcional)" },
-            { name: "rol", label: "Rol", type: "select", value: "residente", options: rolOpts },
-            { name: "unidad_id", label: "Unidad (obligatoria para residentes)", type: "select", value: "", options: unidadOpts }],
-            onSubmit: (v) => API.vincularUsuario(v.email.trim(), v.rol, v.unidad_id, v.nombre) });
-          if (d) { toast("Usuario agregado"); refresh(); }
+          <p class="small muted" style="margin-top:12px"><b>Invitar</b> le manda un correo para que cree su contraseña y entre a la app Umbral o al panel; si ya tenía cuenta, solo queda vinculada.
+          <b>Vincular cuenta existente</b> sirve para cuentas creadas a mano en Supabase.</p>`;
+        const camposUsuario = (correo) => [
+          { name: "email", label: correo, type: "email", required: true, placeholder: "nombre@correo.com" },
+          { name: "nombre", label: "Nombre", placeholder: "Como aparecerá en caseta y en la app" },
+          { name: "rol", label: "Rol", type: "select", value: "residente", options: rolOpts },
+          { name: "unidad_id", label: "Unidad (obligatoria para residentes)", type: "select", value: "", options: unidadOpts }];
+        const validar = (v) => {
+          const email = String(v.email || "").trim().toLowerCase();
+          if (!RE_CORREO.test(email)) throw new Error("Escribe un correo válido, por ejemplo nombre@correo.com");
+          if (v.rol === "residente" && !v.unidad_id) throw new Error(un.length ? "Elige la unidad del residente" : "Primero crea la unidad en “Unidades” (o importa un CSV)");
+          return email;
         };
+        c.querySelector("#nv").onclick = async () => {
+          let msg = "";
+          const d = await form({ title: "Invitar usuario", submit: "Enviar invitación", fields: camposUsuario("Correo"),
+            intro: "Le llegará un correo con un enlace para crear su contraseña. Después podrá entrar a la app Umbral o al panel, según su rol.",
+            onSubmit: async (v) => {
+              const email = validar(v);
+              const [r] = await API.invitar([email]);
+              if (!r || r.estado === "error") throw new Error("No se pudo enviar la invitación: " + (r?.error || "el servicio no respondió"));
+              try { await API.vincularUsuario(email, v.rol, v.unidad_id, String(v.nombre || "").trim()); }
+              catch (e) { throw new Error((r.estado === "invitado" ? "La invitación se envió, pero no se pudo vincular: " : "No se pudo vincular: ") + e.message); }
+              msg = r.estado === "invitado" ? `Invitación enviada a ${email}` : `${email} ya tenía cuenta; quedó vinculado`;
+            } });
+          if (d) { avisoUsuarios = msg; toast(msg); refresh(); }
+        };
+        c.querySelector("#vc").onclick = async () => {
+          const d = await form({ title: "Vincular cuenta existente", submit: "Vincular", fields: camposUsuario("Correo de la cuenta"),
+            intro: "Para cuentas que ya existen en Supabase → Authentication. No se envía ningún correo.",
+            onSubmit: (v) => API.vincularUsuario(validar(v), v.rol, v.unidad_id, String(v.nombre || "").trim()) });
+          if (d) { avisoUsuarios = `${d.email.trim().toLowerCase()} quedó vinculado`; refresh(); }
+        };
+        c.querySelector("#imp").onclick = () => importarCsv(un);
         c.querySelectorAll("[data-u]").forEach((b) => (b.onclick = async () => {
           const u = us.find((x) => x.id === b.dataset.u);
           const d = await form({ title: "Editar " + u.nombre, fields: [
@@ -612,7 +643,7 @@ window.Admin = (function () {
       async unidades(c) {
         const [un, us] = await Promise.all([API.unidades(), API.usuarios()]);
         const residentes = (id) => us.filter((u) => u.unidad_id === id).map((u) => u.nombre);
-        c.innerHTML = head("Unidades", `${un.length} unidades registradas`, `<button class="btn primary" id="nu">+ Unidad</button>`) + `
+        c.innerHTML = head("Unidades", `${un.length} unidades registradas`, `<button type="button" class="btn" id="imp">Importar CSV</button><button class="btn primary" id="nu">+ Unidad</button>`) + `
           <div class="row wrap" style="margin-bottom:12px"><input class="input" id="bq" placeholder="Buscar unidad, torre o propietario" style="max-width:300px"></div>
           <div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>Unidad</th><th>Torre / sección</th><th>Propietario</th><th>Residentes con app</th><th></th></tr></thead><tbody id="tb"></tbody></table></div></div>`;
         const draw = () => {
@@ -620,7 +651,7 @@ window.Admin = (function () {
           const rows = un.filter((u) => [u.nombre, u.torre, u.propietario].join(" ").toLowerCase().includes(qv));
           c.querySelector("#tb").innerHTML = rows.map((u) => `<tr><td><b>${esc(u.nombre)}</b></td><td>${esc(u.torre || "—")}</td><td>${esc(u.propietario || "—")}</td>
             <td class="small">${esc(residentes(u.id).join(", ") || "—")}</td><td><button class="btn" data-e="${esc(u.id)}">Editar</button></td></tr>`).join("")
-            || `<tr><td colspan="5" class="empty">${un.length ? "Sin resultados" : "Aún no hay unidades. Crea la primera con “+ Unidad”."}</td></tr>`;
+            || `<tr><td colspan="5" class="empty">${un.length ? "Sin resultados" : "Aún no hay unidades. Crea la primera con “+ Unidad” o súbelas todas con “Importar CSV”."}</td></tr>`;
           c.querySelectorAll("[data-e]").forEach((b) => (b.onclick = () => editar(un.find((u) => u.id === b.dataset.e))));
         };
         const campos = (u = {}) => [
@@ -633,6 +664,7 @@ window.Admin = (function () {
           if (d) { toast("Unidad actualizada"); refresh(); }
         }
         c.querySelector("#bq").oninput = draw;
+        c.querySelector("#imp").onclick = () => importarCsv(un);
         c.querySelector("#nu").onclick = async () => {
           const d = await form({ title: "Nueva unidad", submit: "Crear unidad", fields: campos(), onSubmit: (v) => API.crearUnidad(limpio(v)) });
           if (d) { toast("Unidad creada"); refresh(); }
@@ -652,13 +684,14 @@ window.Admin = (function () {
         !k.unidades && `Crea las unidades del condominio en <a href="#" data-go="unidades">Unidades</a>.`,
         k.usuarios < 2 && `Agrega guardias y residentes en <a href="#" data-go="usuarios">Usuarios y roles</a>.`
       ].filter(Boolean);
-      c.innerHTML = head("Resumen", "Actividad de seguridad del condominio") + `
-        ${pendientes.length ? `<div class="card" style="margin-bottom:16px"><header><h2>Primeros pasos</h2></header>${pendientes.map((p) => `<div style="margin:4px 0">• ${p}</div>`).join("")}</div>` : ""}
+      c.innerHTML = head("Resumen", esc(hoyLargo()), `${BTN_SOS}<button type="button" class="btn" id="vb2">Ver bitácora</button>${MOD.comunidad ? `<button type="button" class="btn primary" data-go="avisos">Nuevo comunicado</button>` : ""}`) + `
+        ${pendientes.length ? `<div class="card" style="margin-bottom:16px"><header><h2>Primeros pasos</h2></header>${pendientes.map((p) => `<p style="margin:6px 0">• ${p}</p>`).join("")}
+          ${!k.unidades || k.usuarios < 2 ? `<p style="margin:6px 0">• ¿Tienes la lista en Excel? <a href="#" data-imp>Importa unidades y residentes desde CSV</a>.</p>` : ""}</div>` : ""}
         <div class="grid g4" style="margin-bottom:16px">
           <div class="card kpi"><div class="label">Accesos hoy</div><div class="value">${k.accesos_hoy}</div><div class="sub">Lecturas registradas en caseta</div></div>
           <div class="card kpi"><div class="label">Denegados hoy</div><div class="value" style="color:${k.denegados_hoy ? "var(--bad)" : "inherit"}">${k.denegados_hoy}</div><div class="sub">Códigos inválidos o vencidos</div></div>
           <div class="card kpi"><div class="label">Pases vigentes</div><div class="value">${k.pases_vigentes}</div><div class="sub">Visitas y proveedores activos</div></div>
-          <div class="card kpi"><div class="label">Unidades · usuarios</div><div class="value">${k.unidades} · ${k.usuarios}</div><div class="sub">${k.alertas_abiertas ? k.alertas_abiertas + " alerta(s) sin atender" : "Sin alertas abiertas"}</div></div>
+          <div class="card kpi"><div class="label">Unidades · usuarios</div><div class="value">${k.unidades} · ${k.usuarios}</div><div class="sub">${k.alertas_abiertas ? `<span class="chip bad">⚠ ${esc(k.alertas_abiertas)} alerta(s) sin atender</span>` : "Sin alertas abiertas"}</div></div>
         </div>
         ${MOD.comunidad ? `<div class="grid g3" style="margin-bottom:16px">
           <div class="card kpi"><div class="label">Tickets abiertos</div><div class="value">${k.tickets_abiertos}</div><div class="sub"><a href="#" data-go="tickets">Ver tickets</a></div></div>
@@ -672,24 +705,237 @@ window.Admin = (function () {
           <div class="row" style="gap:18px;padding:0 4px">${dias.map((d) => `<div class="small muted" style="flex:1;text-align:center">${DS[new Date(d.dia + "T12:00").getDay()]} ${+d.dia.slice(8)}</div>`).join("")}</div>
           <div class="legend"><span><i style="background:var(--accent)"></i>Permitidos</span><span><i style="background:var(--bad)"></i>Denegados</span></div>`}
         </div>
-        <div class="card" style="margin-top:16px"><header><h2>Últimos accesos de hoy</h2><div class="spacer"></div><button class="btn" id="vb">Ver bitácora</button></header>
-          <div class="table-wrap"><table class="table"><tbody>${accesos.map((a) => `<tr><td class="muted">${time(a.created_at)}</td><td><b>${esc(a.nombre)}</b></td><td>${esc(a.unidad)}</td><td>${a.permitido ? `<span class="chip">${esc(TIPOS[a.tipo])}</span>` : `<span class="chip bad">${esc(a.motivo || "Denegado")}</span>`}</td></tr>`).join("") || `<tr><td class="empty">Sin accesos hoy</td></tr>`}</tbody></table></div></div>`;
-      c.querySelector("#vb").onclick = () => go("accesos");
+        <div class="card" style="margin-top:16px"><header><h2>Accesos recientes</h2><div class="spacer"></div><button type="button" class="btn link" id="vb">Ver bitácora</button></header>
+          ${tablaAccesos(accesos)}</div>`;
+      c.querySelector("#vb").onclick = c.querySelector("#vb2").onclick = () => go("accesos");
       c.querySelectorAll("[data-go]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); go(a.dataset.go); }));
+      c.querySelector("[data-imp]")?.addEventListener("click", async (e) => { e.preventDefault(); importarCsv(await API.unidades()); });
+      sosAdmin(c);
+    }
+
+    // Emergencia desde administración (con confirmación): misma acción que el botón de caseta
+    const BTN_SOS = `<button type="button" class="btn danger" id="sosAdm" title="Envía una notificación de emergencia a todo el condominio">⚠ Emergencia</button>`;
+    const sosAdmin = (c) => { const b = c.querySelector("#sosAdm"); if (b) b.onclick = async () => { if (await UI.emergencia({ confirmar: true })) renderAlertas(); }; };
+
+    // =================================================================
+    //  Importar unidades y usuarios desde CSV
+    //  Columnas: unidad,torre,propietario,clabe,correo,nombre,rol (rol vacío = residente)
+    // =================================================================
+    const COLS_CSV = ["unidad", "torre", "propietario", "clabe", "correo", "nombre", "rol"];
+    const ROL_CSV = { residente: "residente", guardia: "guardia", seguridad: "guardia", caseta: "guardia", vigilante: "guardia",
+      admin: "admin", administracion: "admin", administrador: "admin", administradora: "admin" };
+    const sinAcentos = (s) => String(s ?? "").normalize("NFD").replace(/\p{M}/gu, "").trim().toLowerCase();
+    const MAX_FILAS = 2000, LOTE = 50;
+
+    // Convierte las filas del CSV en registros validados: { linea, unidad, …, rol, errores: [] }
+    function validarCsv(filas) {
+      if (filas.length < 2) return { error: "El archivo no tiene filas de datos debajo de los encabezados." };
+      if (filas.length - 1 > MAX_FILAS) return { error: `El archivo tiene ${filas.length - 1} filas; el máximo es ${MAX_FILAS} por importación.` };
+      const idx = {};
+      filas[0].forEach((t, i) => {
+        const k = sinAcentos(t).replace(/[^a-z]/g, "");
+        const col = k === "email" ? "correo" : COLS_CSV.find((c) => k.startsWith(c));
+        if (col && idx[col] === undefined) idx[col] = i;
+      });
+      if (idx.unidad === undefined) return { error: "Falta la columna “unidad” en la primera fila. Descarga la plantilla para ver el formato." };
+      const vistos = new Map();
+      const regs = filas.slice(1).map((f) => {
+        const v = (c) => (idx[c] === undefined ? "" : String(f[idx[c]] ?? "").replace(/\s+/g, " ").trim());
+        const r = { linea: f.linea, unidad: v("unidad"), torre: v("torre"), propietario: v("propietario"), clabe: v("clabe").replace(/[\s-]/g, ""),
+          correo: v("correo").toLowerCase(), nombre: v("nombre"), rolTxt: v("rol"), errores: [] };
+        r.rol = r.rolTxt ? ROL_CSV[sinAcentos(r.rolTxt)] : "residente";
+        if (!r.rol) r.errores.push(`Rol inválido “${r.rolTxt}”: usa residente, guardia o admin`);
+        if (!r.unidad && (!r.correo || r.rol === "residente")) r.errores.push("Falta la unidad");
+        if (r.correo && !RE_CORREO.test(r.correo)) r.errores.push("Correo inválido");
+        if (r.correo && vistos.has(r.correo)) r.errores.push(`Correo repetido (también en la fila ${vistos.get(r.correo)})`);
+        if (r.correo && !vistos.has(r.correo)) vistos.set(r.correo, r.linea);
+        if (r.clabe && !/^\d{18}$/.test(r.clabe)) r.errores.push("La CLABE debe tener 18 dígitos");
+        return r;
+      });
+      return { regs };
+    }
+
+    function importarCsv(unidadesActuales) {
+      const existentes = new Map(unidadesActuales.map((u) => [u.nombre.trim(), u.id]));
+      let regs = [], corriendo = false, cambio = false;
+      const bg = h(`<div class="modal-bg"><div class="modal importar" role="dialog" aria-modal="true" aria-labelledby="impT">
+        <div class="row"><h2 id="impT" style="margin:0">Importar desde CSV</h2><div class="spacer"></div><button type="button" class="btn ghost icon" data-x aria-label="Cerrar">✕</button></div>
+        <section id="p1" style="margin-top:14px">
+          <p class="muted">Sube tu padrón con una fila por persona (o por unidad, sin correo). Creamos las unidades que falten, enviamos la invitación a cada correo y lo vinculamos a su unidad.</p>
+          <p class="small muted" style="margin-top:8px">Columnas: <b>${COLS_CSV.join(", ")}</b>. Si dejas el rol vacío, se toma como residente. Las unidades que ya existen no se modifican.</p>
+          <div class="row wrap" style="margin:14px 0"><button type="button" class="btn" id="plantilla">Descargar plantilla</button></div>
+          <div class="field"><label for="impF">Archivo CSV</label><input class="input" id="impF" type="file" accept=".csv,text/csv,text/plain">
+            <div class="small muted" style="margin-top:4px">En Excel: Archivo → Guardar como → “CSV UTF-8”. Se aceptan comas o punto y coma.</div></div>
+        </section>
+        <section id="p2" class="hidden" aria-live="polite"></section>
+        <section id="p3" class="hidden" aria-live="polite"></section>
+        <div class="error" role="alert" id="impE"></div>
+        <div class="actions"><button type="button" class="btn" data-x>Cancelar</button><button type="button" class="btn primary hidden" id="impOk"></button></div>
+      </div></div>`);
+      const $m = (s) => bg.querySelector(s);
+      const antesDeSalir = (e) => { e.preventDefault(); e.returnValue = ""; };
+      const cerrar = () => {
+        if (corriendo) return;
+        document.removeEventListener("keydown", k); bg.remove();
+        if (cambio) refresh();
+      };
+      const k = (e) => { if (e.key === "Escape" && bg === [...document.querySelectorAll(".modal-bg")].pop()) { e.stopImmediatePropagation(); cerrar(); } };
+      document.addEventListener("keydown", k);
+      bg.querySelectorAll("[data-x]").forEach((b) => (b.onclick = cerrar));
+      $m("#plantilla").onclick = () => UI.descargarCsv("plantilla_umbral.csv", [COLS_CSV,
+        ["Casa 1", "A", "Juan Pérez", "", "juan@ejemplo.com", "Juan Pérez", "residente"],
+        ["Casa 1", "A", "", "", "ana@ejemplo.com", "Ana López", ""],
+        ["Casa 2", "A", "María Ruiz", "", "", "", ""],
+        ["", "", "", "", "caseta@ejemplo.com", "Guardia turno noche", "guardia"]]);
+
+      $m("#impF").onchange = async (e) => {
+        const f = e.target.files[0]; $m("#impE").textContent = "";
+        if (!f) return;
+        if (f.size > 2 * 1024 * 1024) { $m("#impE").textContent = "El archivo pesa más de 2 MB. Revisa que sea un CSV."; return; }
+        let texto;
+        try { texto = await f.text(); } catch (err) { $m("#impE").textContent = "No se pudo leer el archivo."; return; }
+        // Excel a veces guarda en Windows-1252: si hay caracteres de reemplazo, se vuelve a leer así
+        if (texto.includes(String.fromCharCode(0xfffd))) { try { texto = new TextDecoder("windows-1252").decode(await f.arrayBuffer()); } catch (err) {} }
+        const r = validarCsv(UI.parseCsv(texto));
+        if (r.error) { $m("#impE").textContent = r.error; $m("#p2").classList.add("hidden"); $m("#impOk").classList.add("hidden"); return; }
+        regs = r.regs; vistaPrevia();
+      };
+
+      function vistaPrevia() {
+        const validas = regs.filter((r) => !r.errores.length), malas = regs.filter((r) => r.errores.length);
+        const nuevas = new Set(validas.filter((r) => r.unidad && !existentes.has(r.unidad)).map((r) => r.unidad));
+        const correos = validas.filter((r) => r.correo).length;
+        const MAXV = 200, orden = [...malas, ...validas];
+        $m("#p2").innerHTML = `
+          <div class="grid g4 imp-kpis" style="margin:16px 0">
+            <div class="card kpi"><div class="label">Filas listas</div><div class="value" style="color:var(--ok)">${validas.length}</div></div>
+            <div class="card kpi"><div class="label">Con errores</div><div class="value" style="color:${malas.length ? "var(--bad)" : "inherit"}">${malas.length}</div></div>
+            <div class="card kpi"><div class="label">Unidades nuevas</div><div class="value">${nuevas.size}</div></div>
+            <div class="card kpi"><div class="label">Correos a invitar</div><div class="value">${correos}</div></div>
+          </div>
+          ${malas.length ? `<p class="notice">Las filas con error no se importan. Corrígelas en tu archivo y vuelve a subirlo, o importa solo las filas listas.</p>` : ""}
+          <div class="table-wrap"><table class="table"><thead><tr><th class="num">Fila</th><th>Unidad</th><th>Correo</th><th>Nombre</th><th>Rol</th><th>Estado</th></tr></thead><tbody>
+          ${orden.slice(0, MAXV).map((r) => `<tr><td class="num muted">${esc(r.linea)}</td><td>${esc(r.unidad || "—")}${r.unidad && !r.errores.length && !existentes.has(r.unidad) ? ` <span class="chip accent">Nueva</span>` : ""}</td>
+            <td class="small">${esc(r.correo || "—")}</td><td>${esc(r.nombre || "—")}</td><td class="small">${esc(!r.correo ? "—" : r.rol ? ROLES[r.rol] : r.rolTxt)}</td>
+            <td>${r.errores.length ? `<span class="chip bad">✕ ${esc(r.errores.join(" · "))}</span>` : `<span class="chip ok">✓ Lista</span>`}</td></tr>`).join("")}
+          </tbody></table></div>
+          ${orden.length > MAXV ? `<p class="small muted" style="margin-top:8px">Se muestran ${MAXV} de ${orden.length} filas (primero las que tienen error).</p>` : ""}`;
+        $m("#p2").classList.remove("hidden");
+        const ok = $m("#impOk");
+        ok.classList.toggle("hidden", !validas.length);
+        ok.textContent = `Importar ${validas.length} fila${validas.length === 1 ? "" : "s"}`;
+        ok.onclick = () => ejecutar(validas);
+        if (!validas.length) $m("#impE").textContent = "Ninguna fila está lista para importar. Corrige los errores y vuelve a subir el archivo.";
+      }
+
+      async function ejecutar(validas) {
+        corriendo = true; cambio = true;
+        window.addEventListener("beforeunload", antesDeSalir);
+        bg.querySelectorAll("[data-x], #impOk, #impF").forEach((b) => (b.disabled = true));
+        $m("#p1").classList.add("hidden"); $m("#p2").classList.add("hidden"); $m("#impE").textContent = "";
+        const res = { creadas: 0, invitados: 0, existentes: 0, vinculados: 0, errores: [] };
+        const falla = (r, m) => res.errores.push([r.linea, r.unidad, r.correo, r.nombre, m]);
+        const nuevas = [...new Set(validas.filter((r) => r.unidad && !existentes.has(r.unidad)).map((r) => r.unidad))];
+        const conCorreo = validas.filter((r) => r.correo);
+        const total = nuevas.length + conCorreo.length * 2 || 1;
+        let hechos = 0;
+        const progreso = (txt) => {
+          const pct = Math.round((hechos / total) * 100);
+          $m("#p3").innerHTML = `<p style="margin:16px 0 8px"><b>${esc(txt)}</b></p>
+            <div class="progress" role="progressbar" aria-label="Avance de la importación" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><div style="width:${pct}%"></div></div>
+            <p class="small muted" style="margin-top:8px">${pct}% · No cierres esta ventana hasta que termine.</p>`;
+          $m("#p3").classList.remove("hidden");
+        };
+        try {
+          // 1. Unidades que no existen (por nombre exacto); los datos se toman de la primera fila de esa unidad
+          const unidadFallida = new Map();
+          for (const nombre of nuevas) {
+            progreso(`Creando unidades (${res.creadas + unidadFallida.size + 1} de ${nuevas.length})…`);
+            const d = validas.find((r) => r.unidad === nombre && (r.torre || r.propietario || r.clabe)) || {};
+            try {
+              const u = await API.crearUnidad({ nombre, torre: d.torre || null, propietario: d.propietario || null, clabe: d.clabe || null });
+              existentes.set(nombre, u.id); res.creadas++;
+            } catch (e) { unidadFallida.set(nombre, e.message); }
+            hechos++;
+          }
+          validas.filter((r) => unidadFallida.has(r.unidad)).forEach((r) => falla(r, "No se pudo crear la unidad: " + unidadFallida.get(r.unidad)));
+          // 2. Invitaciones en lotes
+          const porInvitar = conCorreo.filter((r) => !r.unidad || existentes.has(r.unidad));
+          hechos += conCorreo.length - porInvitar.length;
+          const listos = [];
+          for (let i = 0; i < porInvitar.length; i += LOTE) {
+            const lote = porInvitar.slice(i, i + LOTE);
+            progreso(`Enviando invitaciones (${Math.min(i + LOTE, porInvitar.length)} de ${porInvitar.length})…`);
+            try {
+              const rs = await API.invitar(lote.map((r) => r.correo));
+              const m = new Map(rs.map((x) => [String(x.correo || "").toLowerCase(), x]));
+              lote.forEach((r) => {
+                const x = m.get(r.correo);
+                if (!x) falla(r, "El servicio de invitaciones no respondió por este correo");
+                else if (x.estado === "error") falla(r, "No se pudo invitar: " + (x.error || "error desconocido"));
+                else { x.estado === "invitado" ? res.invitados++ : res.existentes++; listos.push(r); }
+              });
+            } catch (e) { lote.forEach((r) => falla(r, e.message)); }
+            hechos += lote.length;
+          }
+          // 3. Vincular cada correo con su rol y unidad (4 a la vez)
+          hechos += conCorreo.length - listos.length;
+          let n = 0;
+          const trabajador = async () => {
+            while (n < listos.length) {
+              const r = listos[n++];
+              try { await API.vincularUsuario(r.correo, r.rol, r.unidad ? existentes.get(r.unidad) : null, r.nombre); res.vinculados++; }
+              catch (e) { falla(r, "Se invitó, pero no se pudo vincular: " + e.message); }
+              hechos++; progreso(`Vinculando usuarios (${res.vinculados} de ${listos.length})…`);
+            }
+          };
+          await Promise.all([1, 2, 3, 4].map(trabajador));
+        } finally {
+          corriendo = false;
+          window.removeEventListener("beforeunload", antesDeSalir);
+        }
+        resumenImport(res);
+      }
+
+      function resumenImport(res) {
+        const errs = res.errores.sort((a, b) => a[0] - b[0]);
+        $m("#p3").innerHTML = `
+          <p class="notice ${errs.length ? "" : "ok"}" role="status" style="margin-top:16px">${errs.length ? `⚠ Importación terminada con ${errs.length} error(es).` : "✓ Importación terminada sin errores."}</p>
+          <div class="grid g4 imp-kpis">
+            <div class="card kpi"><div class="label">Unidades creadas</div><div class="value">${res.creadas}</div></div>
+            <div class="card kpi"><div class="label">Invitaciones enviadas</div><div class="value">${res.invitados}</div><div class="sub">${res.existentes} ya tenían cuenta</div></div>
+            <div class="card kpi"><div class="label">Vinculados</div><div class="value" style="color:var(--ok)">${res.vinculados}</div></div>
+            <div class="card kpi"><div class="label">Errores</div><div class="value" style="color:${errs.length ? "var(--bad)" : "inherit"}">${errs.length}</div></div>
+          </div>
+          ${errs.length ? `<div class="table-wrap" style="margin-top:14px"><table class="table"><thead><tr><th class="num">Fila</th><th>Unidad</th><th>Correo</th><th>Error</th></tr></thead><tbody>
+            ${errs.slice(0, 100).map(([l, u, c, , m]) => `<tr><td class="num muted">${esc(l)}</td><td>${esc(u || "—")}</td><td class="small">${esc(c || "—")}</td><td class="small" style="color:var(--bad)">${esc(m)}</td></tr>`).join("")}
+            </tbody></table></div>` : ""}`;
+        const ok = $m("#impOk");
+        bg.querySelectorAll("[data-x]").forEach((b) => (b.disabled = false));
+        bg.querySelector(".actions [data-x]").textContent = "Cerrar";
+        ok.disabled = false; ok.classList.toggle("hidden", !errs.length);
+        ok.textContent = "Descargar errores (CSV)";
+        ok.onclick = () => UI.descargarCsv("errores_importacion.csv", [["fila", "unidad", "correo", "nombre", "error"], ...errs]);
+        bg.querySelector(".actions [data-x]").focus();
+      }
+
+      document.body.appendChild(bg);
+      $m("#impF").focus();
     }
 
     // Estado de cuenta + registrar pago manual
     async function estadoCuenta(u) {
       const cs = await API.cargos({ unidad_id: u.id });
-      const bg = h(`<div class="modal-bg"><div class="modal" style="max-width:640px">
-        <div class="row"><h2 style="margin:0">${esc(u.nombre)}</h2><div class="spacer"></div><button class="btn ghost" data-x>✕</button></div>
+      const bg = h(`<div class="modal-bg"><div class="modal" role="dialog" aria-modal="true" aria-label="Estado de cuenta" style="max-width:640px">
+        <div class="row"><h2 style="margin:0">${esc(u.nombre)}</h2><div class="spacer"></div><button type="button" class="btn ghost icon" data-x aria-label="Cerrar">✕</button></div>
         <p class="muted" style="margin:4px 0 14px">${esc(u.propietario || "")} · CLABE ${esc(u.clabe || "—")}</p>
-        <table class="table"><thead><tr><th>Concepto</th><th>Vence</th><th class="num">Monto</th><th>Estado</th><th></th></tr></thead><tbody>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Concepto</th><th>Vence</th><th class="num">Monto</th><th>Estado</th><th></th></tr></thead><tbody>
         ${cs.length ? "" : `<tr><td colspan="5" class="empty">Sin cargos</td></tr>`}${cs.map((x) => `<tr><td>${esc(x.concepto)}${x.extraordinaria ? ` <span class="chip">Extra</span>` : ""}</td><td class="small">${date(x.vence)}</td><td class="num">${money(x.monto)}</td>
-          <td>${x.estado === "pagado" ? `<span class="chip ok">Pagado</span>` : x.estado === "vencido" ? `<span class="chip bad">Vencido</span>` : `<span class="chip warn">Pendiente</span>`}</td>
+          <td>${x.estado === "pagado" ? `<span class="chip ok">✓ Pagado</span>` : x.estado === "vencido" ? `<span class="chip bad">✕ Vencido</span>` : `<span class="chip warn">Pendiente</span>`}</td>
           <td>${x.estado !== "pagado" ? `<button class="btn" data-c="${esc(x.id)}">Registrar pago</button>` : ""}</td></tr>`).join("")}
-        </tbody></table></div></div>`);
+        </tbody></table></div></div></div>`);
       bg.querySelector("[data-x]").onclick = () => bg.remove();
+      bg.addEventListener("keydown", (e) => { if (e.key === "Escape") bg.remove(); });
       bg.querySelectorAll("[data-c]").forEach((b) => (b.onclick = async () => {
         const cg = cs.find((x) => x.id === b.dataset.c);
         bg.remove();
@@ -701,22 +947,16 @@ window.Admin = (function () {
         if (d) { toast("Pago registrado"); refresh(); }
       }));
       document.body.appendChild(bg);
+      bg.querySelector("[data-x]").focus();
     }
 
-    function downloadCsv(name, rows) {
-      const csv = rows.map((r) => r.map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(new Blob(["﻿" + csv], { type: "text/csv" })); a.download = name; a.click();
-    }
+    const downloadCsv = (name, rows) => UI.descargarCsv(name, rows);
 
-    async function renderAlertas() {
-      const al = await API.alertas();
-      $("#alertas").innerHTML = al.map((a) => `<div class="alert-banner">⚠ Alerta de caseta: ${esc(a.mensaje)} <span class="small" style="opacity:.8">${time(a.created_at)}</span><div class="spacer"></div><button class="btn" data-at="${a.id}">Marcar atendida</button></div>`).join("");
-      $("#alertas").querySelectorAll("[data-at]").forEach((b) => (b.onclick = async () => { await API.atenderAlerta(+b.dataset.at || b.dataset.at); renderAlertas(); }));
-    }
+    // Alertas abiertas (de caseta o de administración) arriba de todo, con "Marcar atendida"
+    const renderAlertas = () => UI.bannerAlertas($("#alertas"));
 
     const unsub = API.subscribe((tabla) => {
-      if (tabla === "alertas") renderAlertas();
+      if (tabla === "alertas") { renderAlertas(); if (page === "resumen") refresh(); }
       if (tabla === "tickets" || tabla === "paquetes") badges();
       if (tabla === "accesos" && (page === "resumen" || page === "accesos")) refresh();
     });
