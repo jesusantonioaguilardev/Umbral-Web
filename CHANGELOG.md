@@ -5,6 +5,35 @@ Cambios importantes de este proyecto. Formato basado en [Keep a Changelog](https
 ## [Sin publicar]
 
 ### Agregado
+- **Invitar usuarios por correo:** en *Usuarios y roles*, **+ Invitar usuario** pide correo, nombre, rol y unidad, manda la
+  invitación de Supabase y deja a la persona vinculada al condominio, sin tener que crear la cuenta a mano en Authentication.
+  Si el correo ya tenía cuenta, solo se vincula. **(requiere ejecutar `supabase/schema.sql`)**
+  - Edge Function `invitar`: solo la puede usar un admin con condominio; normaliza los correos, revisa cuáles ya existen y
+    manda las invitaciones (máximo 300 por llamada). **No vincula**: el panel llama después a `vincular_usuario`, que sigue
+    siendo la única que decide si alguien puede entrar al condominio. Se despliega y se configura a mano (secreto
+    `URL_BIENVENIDA`, Redirect URL, plantilla del correo y SMTP propio): ver
+    [`supabase/functions/invitar/README.md`](supabase/functions/invitar/README.md).
+  - RPC `correos_registrados(p_correos)`: de una lista de correos, cuáles ya tienen cuenta. Solo la puede llamar la
+    `service_role` (la función `invitar`), para que nadie pueda averiguar desde el panel o la app qué correos están registrados.
+  - Página `bienvenida.html`: el enlace del correo abre esta página para que la persona escriba su nombre (si falta) y defina
+    su contraseña (mínimo 8 caracteres). Avisa si el enlace venció o ya se usó, y quita los tokens de la barra de direcciones.
+  - **Vincular cuenta existente** queda como opción aparte para cuentas creadas a mano en Supabase (no manda correo).
+- **Importar unidades y usuarios desde CSV** en *Usuarios y roles* y en *Unidades* (y desde *Primeros pasos* del resumen):
+  plantilla descargable con las columnas `unidad, torre, propietario, clabe, correo, nombre, rol`, vista previa con los errores
+  por fila (correo inválido o repetido, rol desconocido, CLABE que no tiene 18 dígitos, falta la unidad) y, al terminar, un
+  resumen de unidades creadas, invitaciones enviadas, cuentas que ya existían y vinculados, con los errores descargables en CSV.
+  Acepta coma, punto y coma o tabulador, y archivos de Excel en UTF-8 o Windows-1252; máximo 2,000 filas y 2 MB. Las unidades
+  que ya existen no se modifican. Usa la Edge Function `invitar`, así que necesita lo mismo que *Invitar usuario*.
+- **Alerta de emergencia por push a todo el condominio:** cada alerta nueva (del botón de caseta, de administración o del botón
+  de emergencia de la app) genera una notificación para todas las personas del condominio con la app y sesión abierta
+  (residentes, caseta y administración), menos para quien la envió. Si la manda un residente, el mensaje empieza con su unidad
+  (*"Casa 14: …"*). Trigger `notificar_alerta`, `datos.tipo = "alerta"`. Ver también Umbral-App.
+  **(requiere ejecutar `supabase/schema.sql`)**
+- La Edge Function `notificar` manda las alertas con `channel_id: "emergencias"` en Android, para que lleguen por el canal
+  *Emergencias* de la app aunque esté en segundo plano. **(requiere redesplegar `notificar`:
+  `supabase functions deploy notificar --no-verify-jwt`)**
+- Botón **⚠ Emergencia** en el resumen de administración; pide una segunda confirmación antes de enviar, porque la notificación
+  llega a todo el condominio y no se puede deshacer.
 - **Notificaciones push** para residentes: avisan cuando entra una visita, proveedor, paquetería o Airbnb de su unidad, cuando
   caseta registra un paquete para su unidad y cuando administración publica un aviso (a todo el condominio o solo a la torre
   del aviso). Ver también Umbral-App (push en Android). **(requiere ejecutar `supabase/schema.sql`)**
@@ -36,6 +65,14 @@ Cambios importantes de este proyecto. Formato basado en [Keep a Changelog](https
 - `CLAUDE.md` con el contexto del repositorio para los agentes.
 
 ### Cambiado
+- El alta de guardias y residentes ya no pide crear la cuenta en *Authentication → Add user*: se hace con **+ Invitar usuario**
+  o **Importar CSV**. El error de `vincular_usuario` cuando no existe la cuenta ahora dice *"Invítala primero desde Usuarios →
+  Invitar"*. **(requiere ejecutar `supabase/schema.sql`)**
+- Las alertas abiertas se muestran arriba en caseta y en administración con el mensaje, la hora (o la fecha si no es de hoy) y
+  quién la envió; **Marcar atendida** pide confirmación porque la alerta deja de verse en los dos paneles. El KPI del resumen
+  resalta las alertas sin atender, y el resumen se actualiza en tiempo real cuando llega una.
+- El botón de emergencia de caseta dice *"avisar a todos"* y explica antes de enviar que la notificación llega a todo el
+  condominio; si falla, sugiere llamar a los servicios de emergencia.
 - **Rediseño minimalista** del panel, la caseta, el inicio de sesión y `pase.html`: tipografía Inter, paleta sobria con un solo
   acento, barra lateral clara, tablas y chips de estado con texto (✓/✕), sin sombras. La caseta muestra a la vez el resultado,
   los esperados de hoy, la bitácora y los paquetes. Los ítems del menú son botones accesibles con teclado y Esc cierra los
@@ -63,6 +100,11 @@ Cambios importantes de este proyecto. Formato basado en [Keep a Changelog](https
 - La barra superior del panel ya no se desborda en pantallas angostas.
 
 ### Seguridad
+- Una alerta solo se puede crear a nombre propio: la política `al_ins` exige `creado_por = auth.uid()` (y la columna toma ese
+  valor por defecto), para que nadie mande una alerta haciéndose pasar por otra persona o unidad. **(requiere ejecutar `supabase/schema.sql`)**
+- Límite anti-spam: un residente puede crear como máximo **2 alertas cada 10 minutos** (trigger `limitar_alertas`; caseta y
+  administración sin límite). Como cada alerta llega por push a todo el condominio, así un error o un abuso no satura a nadie.
+  **(requiere ejecutar `supabase/schema.sql`)**
 - Un residente solo puede reportar pagos de cargos de su propia unidad y una sola vez mientras el pago está en revisión.
   **(requiere ejecutar `supabase/schema.sql`)**
 - Los votos de las encuestas solo son visibles dentro del condominio, ya no se puede votar en encuestas cerradas ni de otro

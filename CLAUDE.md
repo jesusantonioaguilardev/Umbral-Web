@@ -9,6 +9,7 @@ y el esquema vive **solo aquí**. Guía para personas: [README.md](README.md). C
 - HTML, CSS y JS puro, sin build ni bundler. Librerías por CDN en `index.html` (supabase-js 2.45.4, html5-qrcode 2.3.8).
 - Orden de carga (importa): `js/config.js` → `api.js` → `ui.js` → `caseta.js` → `admin.js` → `app.js`.
   Cada archivo expone un global: `window.UMBRAL_CONFIG`, `API`, `UI`, `Caseta`, `Admin`.
+  `bienvenida.html` carga solo `config.js` → `api.js` → `ui.js` (sin `app.js`).
 - `app.js` enruta por rol: `guardia` → `Caseta.mount`, `admin` → `Admin.mount`, `residente` → se le pide usar la app.
 - Seguridad en la base de datos (RLS + triggers + RPC `security definer`), no en el cliente.
 - Publicación: GitHub Pages sirve `main` en https://jesusantonioaguilardev.github.io/Umbral-Web/.
@@ -19,10 +20,13 @@ y el esquema vive **solo aquí**. Guía para personas: [README.md](README.md). C
 |---|---|
 | `js/config.js` | `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `PUNTO_ACCESO`, `MODULOS {comunidad, finanzas}`, `ZONA_HORARIA` |
 | `js/api.js` | Única capa de datos: todas las consultas a tablas y `sb.rpc(...)` |
-| `js/ui.js` | `esc` (escape HTML), `form`, `confirmDlg`, `toast`, `UI.zona` (fechas en la zona del condominio) |
+| `js/ui.js` | `esc` (escape HTML), `form`, `confirmDlg`, `toast`, `UI.zona`, `emergencia`, `bannerAlertas`, `parseCsv`, `descargarCsv` |
 | `js/caseta.js` | Panel del guardia: escaneo QR, visita sin pase, bitácora, paquetes, emergencia |
-| `js/admin.js` | Panel admin: menú `TODAS` (filtrado por `MOD`), vistas por `id`, `REPORTES` |
+| `js/admin.js` | Panel admin: menú `TODAS` (filtrado por `MOD`), vistas por `id`, `REPORTES`, `importarCsv`/`validarCsv` |
 | `pase.html` | Página pública: lee `?c=`, dibuja QR `UMBRAL:<código>`. No consulta la BD |
+| `bienvenida.html` | Destino del correo de invitación (o recuperación): define nombre y contraseña (`API.sesionEnlace`, `definirPassword`) |
+| `supabase/functions/notificar/` | Edge Function de push (FCM). Deploy con `--no-verify-jwt` (la llama un webhook) |
+| `supabase/functions/invitar/` | Edge Function de invitaciones. Deploy **con** verify JWT (la llama el admin); secreto `URL_BIENVENIDA` |
 | `supabase/schema.sql` | Esquema completo e idempotente |
 | `supabase/seed_pruebas.sql` | Datos de prueba, **gitignored** (tiene contraseñas). No lo agregues a git |
 
@@ -44,11 +48,19 @@ y el esquema vive **solo aquí**. Guía para personas: [README.md](README.md). C
 - **Pase público:** la app arma `Config.URL_PASE_WEB + código` = `…/Umbral-Web/pase.html?c=<código>`. Si mueves o renombras
   `pase.html`, rompes los enlaces ya enviados por WhatsApp.
 - **RPC usadas:** web → `validar_pase`, `en_lista_negra`, `kpis_admin`, `kpis_accesos`, `emitir_cuotas`, `vincular_usuario`,
-  `desvincular_usuario`. App → `validar_pase`, `generar_codigo_personal`, `registrar_dispositivo`, `quitar_dispositivo`.
+  `desvincular_usuario`. Edge Function `invitar` → `correos_registrados` (solo `service_role`). App → `validar_pase`, `generar_codigo_personal`, `registrar_dispositivo`, `quitar_dispositivo`.
   Cambiar firma o forma del JSON exige revisar ambos repos.
 - **Push:** triggers `notificar_*` insertan en `notificaciones`; un Database Webhook (fuera de `schema.sql`) llama a la Edge
   Function `supabase/functions/notificar`. `p_plataforma` ∈ `android|ios|web|desktop` (igual que `plataformaPush` de la app).
   Las claves `datos` (`tipo`, `*_id`) las lee la app; no las renombres sin cambiarla.
+- **Alertas:** `datos.tipo = "alerta"` → `notificar` manda `channel_id: "emergencias"` y la app usa su canal `emergencias`
+  (`Notificaciones.CANAL_EMERGENCIAS`). Cambiar el tipo o el id del canal exige cambiar ambos. `notificar_alerta` avisa a todo
+  el condominio con dispositivo (cualquier rol) menos al autor.
+- **Alertas siempre con `creado_por` propio:** `al_ins` exige `creado_por = auth.uid()`. Todo insert en `alertas` (web o app)
+  manda el id de quien tiene la sesión. Residentes: máximo 2 cada 10 min (`limitar_alertas`).
+- **Invitaciones:** `API.invitar(correos)` → Edge Function `invitar` → `[{correo, estado: invitado|existente|error}]`. La función
+  **no vincula**; el panel llama después a `vincular_usuario`. No muevas la lógica de condominio/rol a la función.
+  `bienvenida.html` es el `redirectTo` (secreto `URL_BIENVENIDA` + Redirect URLs): no la renombres.
 - **Pagos:** el residente inserta con `confirmado` forzado a `false` (trigger `proteger_pago`); el admin confirma con
   `update pagos set confirmado = true`; `on_pago` marca el cargo pagado. KPIs solo suman confirmados.
 - Columnas que lee la app (`Models.kt`) no se renombran sin cambiar la app.
@@ -69,7 +81,8 @@ No hay pruebas automáticas; prueba en el navegador con las cuentas y pases de `
 - **Nunca ejecutes SQL contra el proyecto de Supabase de producción.** Entrega el SQL para que el usuario lo corra en el SQL Editor.
 - **Sin secretos:** nada de `service_role`, contraseñas ni correos reales en código, docs o commits. En docs usa `https://xxxx.supabase.co`.
 - No uses `service_role` en el cliente; toda regla de acceso va en RLS/triggers.
-- `umbral_setup` y `marcar_vencidos` no se exponen a `authenticated`.
+- `umbral_setup`, `marcar_vencidos` y `correos_registrados` no se exponen a `authenticated` (la última solo a `service_role`).
+- Si cambias `supabase/functions/*/index.ts`, dilo en el CHANGELOG: **(requiere redesplegar `<función>`)**.
 - Si un cambio requiere ejecutar `schema.sql`, dilo en el CHANGELOG: **(requiere ejecutar `supabase/schema.sql`)**.
 - No cambies de rama ni hagas commit/push sin que lo pidan.
 

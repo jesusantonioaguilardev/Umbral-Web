@@ -2,7 +2,7 @@
 
 Envía las notificaciones push de Umbral. El flujo es:
 
-1. Un trigger de `schema.sql` inserta una fila en `public.notificaciones` (visita que entró, paquete recibido o aviso nuevo).
+1. Un trigger de `schema.sql` inserta una fila en `public.notificaciones` (visita que entró, paquete recibido, aviso nuevo o alerta de emergencia).
 2. Un **Database Webhook** de Supabase en `INSERT` de `notificaciones` llama a esta función.
 3. La función lee los tokens del destinatario en `public.dispositivos`, envía con **FCM HTTP v1** y marca `enviada_at` (o `error`) en la fila.
 4. Si FCM responde `UNREGISTERED` (o `INVALID_ARGUMENT` referido al token), borra ese dispositivo.
@@ -113,7 +113,7 @@ La función solo usa el `id` del payload y relee la fila desde la base; si ya ti
 }
 ```
 
-`data.tipo` es `acceso` (con `acceso_id`), `paquete` (con `paquete_id`) o `aviso` (con `aviso_id`). Todos los valores de `data` son strings. En Android se envía con prioridad alta y sin `channel_id` (usa el canal por defecto que la app declare en el manifest con `com.google.firebase.messaging.default_notification_channel_id`).
+`data.tipo` es `acceso` (con `acceso_id`), `paquete` (con `paquete_id`), `aviso` (con `aviso_id`) o `alerta` (con `alerta_id`, alerta de emergencia para todo el condominio). Todos los valores de `data` son strings. En Android se envía con prioridad alta. Las de `tipo = "alerta"` llevan `android.notification.channel_id = "emergencias"` (canal *Emergencias* de la app, con vibración) para que se vean con ese canal aunque la app esté en segundo plano; las demás van sin `channel_id` y usan el canal por defecto que la app declara en el manifest con `com.google.firebase.messaging.default_notification_channel_id` (`umbral`). Si cambias `index.ts`, vuelve a desplegar con `supabase functions deploy notificar --no-verify-jwt`.
 
 ## Rotar secretos
 

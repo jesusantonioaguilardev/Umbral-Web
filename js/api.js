@@ -76,7 +76,7 @@
       async registrarPaquete(p) { return q(sb.from("paquetes").insert({ ...p, condominio_id: me.condominio_id, recibido_por: me.id }).select().single()); },
       async entregarPaquete(id, entregado_a) { return q(sb.from("paquetes").update({ entregado_at: new Date().toISOString(), entregado_a }).eq("id", id)); },
       async crearAlerta(mensaje) { return q(sb.from("alertas").insert({ mensaje, condominio_id: me.condominio_id, creado_por: me.id }).select().single()); },
-      async alertas() { return q(sb.from("alertas").select("*").eq("atendida", false).order("created_at", { ascending: false })); },
+      async alertas() { return (await q(sb.from("alertas").select("*, profiles:creado_por(nombre)").eq("atendida", false).order("created_at", { ascending: false }))).map((a) => ({ ...a, persona: a.profiles?.nombre || "" })); },
       async atenderAlerta(id) { return q(sb.from("alertas").update({ atendida: true }).eq("id", id)); },
       async unidades() { return q(sb.from("unidades").select("*").order("nombre")); },
       async crearUnidad(u) { return q(sb.from("unidades").insert({ ...u, condominio_id: me.condominio_id }).select().single()); },
@@ -174,6 +174,46 @@
       async vincularUsuario(email, rol, unidad_id, nombre) {
         return q(sb.rpc("vincular_usuario", { p_email: email, p_rol: rol, p_unidad: unidad_id || null, p_nombre: nombre || null }));
       },
+      // Edge Function "invitar" (solo admins): manda el correo de invitación. Máx. 300 por llamada.
+      // Devuelve [{ correo, estado: "invitado" | "existente" | "error", error? }]
+      async invitar(correos) {
+        if (correos.length > 300) throw new Error("Máximo 300 correos por envío");
+        const { data, error } = await sb.functions.invoke("invitar", { body: { correos } });
+        if (error) {
+          const st = error.context?.status;
+          let m = ""; try { const j = await error.context.json(); m = j.error || j.message || ""; } catch (e) {}
+          if (st === 401 || st === 403) throw new Error("Solo administración puede invitar usuarios. Si el problema sigue, vuelve a iniciar sesión.");
+          if (st === 404 || error.name === "FunctionsFetchError" || error.name === "FunctionsRelayError")
+            throw new Error("No se pudo contactar el servicio de invitaciones. Revisa tu conexión o que la función “invitar” esté publicada en Supabase.");
+          throw new Error(m || "No se pudieron enviar las invitaciones");
+        }
+        return data?.resultados || [];
+      },
+      // ---- Enlace de invitación o recuperación (bienvenida.html) ----
+      // supabase-js toma la sesión del #hash al crear el cliente; también acepta ?token_hash=…&type=…
+      async sesionEnlace({ token_hash, type } = {}) {
+        if (token_hash) {
+          const { data, error } = await sb.auth.verifyOtp({ token_hash, type: type || "invite" });
+          if (error) return null;
+          if (data.session) return data.session;
+        }
+        const { data } = await sb.auth.getSession();
+        return data.session || null;
+      },
+      async perfilPropio(uid) { const { data } = await sb.from("profiles").select("nombre, email").eq("id", uid).maybeSingle(); return data; },
+      async definirPassword(password, nombre) {
+        const { data, error } = await sb.auth.updateUser({ password, ...(nombre ? { data: { nombre } } : {}) });
+        if (error) {
+          const m = error.message || "";
+          if (/different from the old/i.test(m)) throw new Error("La nueva contraseña debe ser distinta de la anterior");
+          if (/weak|at least|characters/i.test(m)) throw new Error("La contraseña es muy débil: usa al menos 8 caracteres, con letras y números");
+          if (/expired|invalid|jwt|session/i.test(m)) throw new Error("El enlace ya venció. Pide a la administración que te envíe uno nuevo");
+          throw new Error("No se pudo guardar la contraseña: " + m);
+        }
+        if (nombre) await q(sb.from("profiles").update({ nombre }).eq("id", data.user.id));
+        return data.user;
+      },
+      async cerrarSesionEnlace() { await sb.auth.signOut(); },
       async desvincularUsuario(id) { return q(sb.rpc("desvincular_usuario", { p_id: id })); },
       async listaNegra() { return q(sb.from("lista_negra").select("*").order("created_at", { ascending: false })); },
       async agregarListaNegra(x) { return q(sb.from("lista_negra").insert({ ...x, condominio_id: me.condominio_id, creado_por: me.id }).select().single()); },

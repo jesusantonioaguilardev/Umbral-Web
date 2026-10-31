@@ -22,7 +22,7 @@ window.Caseta = (function () {
           <span class="reloj" id="reloj" aria-label="Hora actual"></span>
           ${!COMUNIDAD ? "" : `<button type="button" class="btn" id="paq">Recibir paquete</button>`}
           <button type="button" class="btn primary" id="manual">Visita sin pase</button>
-          <button type="button" class="sos" id="sos">⚠ Emergencia</button>
+          <button type="button" class="sos" id="sos" title="Envía una notificación de emergencia a todo el condominio">⚠ Emergencia<span class="sos-extra"> · avisar a todos</span></button>
           <span id="theme"></span>
           <div class="user-pill" title="${esc(me.nombre)}"><span class="avatar" aria-hidden="true">${esc(initials(me.nombre))}</span><span class="small">${esc(me.nombre)}<br><span class="muted">Guardia</span></span></div>
           <button type="button" class="btn" id="salir">Salir</button>
@@ -193,18 +193,11 @@ window.Caseta = (function () {
       });
       if (d) { toast("Paquete registrado · residente notificado"); render("paquetes"); }
     };
-    $("#sos").onclick = async () => {
-      const d = await form({ title: "Alerta de emergencia", submit: "Enviar alerta", fields: [{ name: "m", label: "Mensaje para residentes y administración", type: "textarea", value: "Emergencia en caseta. Favor de mantenerse en sus domicilios." }],
-        onSubmit: (v) => API.crearAlerta(v.m) });
-      if (d) toast("Alerta enviada");
-    };
+    // Emergencia: el insert en alertas manda push a todo el condominio (residentes, caseta y administración)
+    $("#sos").onclick = async () => { if (await UI.emergencia({ mensaje: "Emergencia en caseta. Favor de mantenerse en sus domicilios." })) renderAlertas(); };
     $("#salir").onclick = async () => { await stopCam(); logout(); };
 
-    async function renderAlertas() {
-      const al = await API.alertas();
-      $("#alertas").innerHTML = al.map((a) => `<div class="alert-banner">⚠ ${esc(a.mensaje)} <span class="small" style="font-weight:500">${time(a.created_at)}</span><div class="spacer"></div><button type="button" class="btn sm" data-at="${esc(a.id)}">Atendida</button></div>`).join("");
-      $("#alertas").querySelectorAll("[data-at]").forEach((b) => (b.onclick = async () => { await API.atenderAlerta(+b.dataset.at || b.dataset.at); renderAlertas(); }));
-    }
+    const renderAlertas = () => UI.bannerAlertas($("#alertas"));
 
     // Tiempo real
     const unsub = API.subscribe((tabla) => {

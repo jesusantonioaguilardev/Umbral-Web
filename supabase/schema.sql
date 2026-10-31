@@ -144,6 +144,10 @@ create table if not exists alertas (
 -- Placa del vehículo en el registro manual de caseta
 alter table accesos add column if not exists placa text;
 
+-- Alertas: el autor es siempre quien inserta (la política al_ins lo exige)
+alter table alertas alter column creado_por set default auth.uid();
+create index if not exists alertas_condo_fecha on alertas(condominio_id, created_at desc);
+
 create index if not exists accesos_condo_fecha on accesos(condominio_id, created_at desc);
 create index if not exists pases_unidad on pases(unidad_id, created_at desc);
 
@@ -432,7 +436,7 @@ begin
     on conflict (id) do update set email = excluded.email;
   perform set_config('umbral.interno', '', true);
   select * into pr from profiles where lower(email) = lower(trim(p_email));
-  if not found then raise exception 'No existe una cuenta con el correo %. Créala primero en Supabase → Authentication → Add user.', p_email; end if;
+  if not found then raise exception 'No existe una cuenta con el correo %. Invítala primero desde Usuarios → Invitar.', p_email; end if;
   if pr.condominio_id is not null and pr.condominio_id <> my_condo() then raise exception 'Ese usuario pertenece a otro condominio'; end if;
   if p_unidad is not null and not exists (select 1 from unidades where id = p_unidad and condominio_id = my_condo()) then
     raise exception 'Unidad inválida'; end if;
@@ -442,6 +446,14 @@ begin
    where id = pr.id returning * into pr;
   return row_to_json(pr);
 end $$;
+
+-- Uso interno de la Edge Function "invitar" (service role): de una lista de correos, cuáles ya tienen cuenta en Auth.
+-- No está expuesta a la app ni al panel (ver Permisos de funciones): evita enumerar cuentas de otros condominios.
+create or replace function correos_registrados(p_correos text[]) returns setof text
+language sql stable security definer set search_path = public as $$
+  select distinct lower(u.email)::text from auth.users u
+  where lower(u.email) = any (select lower(trim(x)) from unnest(p_correos[1:300]) x)
+$$;
 
 -- El admin saca a alguien del condominio (no borra la cuenta)
 create or replace function desvincular_usuario(p_id uuid) returns void
@@ -743,12 +755,50 @@ drop trigger if exists trg_notificar_aviso on avisos;
 create trigger trg_notificar_aviso after insert on avisos
   for each row execute function notificar_aviso();
 
+-- Anti-spam: un residente puede crear como máximo 2 alertas cada 10 minutos (caseta y admin sin límite)
+create or replace function limitar_alertas() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null or my_rol() is distinct from 'residente' then return new; end if;
+  perform pg_advisory_xact_lock(hashtext('alertas:' || auth.uid()::text));   -- dos inserts simultáneos no se saltan el conteo
+  if (select count(*) from alertas where creado_por = auth.uid() and created_at > now() - interval '10 minutes') >= 2 then
+    raise exception 'Ya enviaste una alerta hace poco; caseta ya fue avisada';
+  end if;
+  return new;
+end $$;
+drop trigger if exists trg_limitar_alertas on alertas;
+create trigger trg_limitar_alertas before insert on alertas
+  for each row execute function limitar_alertas();
+
+-- Alerta de emergencia: a todos los del condominio con algún dispositivo (residentes, caseta y admin), menos quien la creó.
+-- Si la creó un residente, el cuerpo empieza con su unidad ("Casa 14: ...").
+create or replace function notificar_alerta() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare unidad_autor text; msg text := coalesce(nullif(trim(new.mensaje), ''), 'Emergencia');
+begin
+  select u.nombre into unidad_autor from profiles p join unidades u on u.id = p.unidad_id and u.condominio_id = new.condominio_id
+   where p.id = new.creado_por and p.rol = 'residente' and p.condominio_id = new.condominio_id;
+  insert into notificaciones (condominio_id, profile_id, titulo, cuerpo, datos)
+    select new.condominio_id, p.id, 'Alerta de emergencia',
+           left(case when unidad_autor is not null then unidad_autor || ': ' || msg else msg end, 240),
+           jsonb_build_object('tipo', 'alerta', 'alerta_id', new.id)
+    from profiles p
+    where p.condominio_id = new.condominio_id and p.id is distinct from new.creado_por
+      and exists (select 1 from dispositivos d where d.profile_id = p.id and d.condominio_id = new.condominio_id);
+  return new;
+end $$;
+drop trigger if exists trg_notificar_alerta on alertas;
+create trigger trg_notificar_alerta after insert on alertas
+  for each row execute function notificar_alerta();
+
 -- ---------- Permisos de funciones ----------
 -- Nadie sin sesión puede llamar funciones; las de configuración solo desde el SQL Editor.
 revoke execute on all functions in schema public from public, anon;
 grant execute on all functions in schema public to authenticated;
 revoke execute on function umbral_setup(text,text,text) from authenticated;
 revoke execute on function marcar_vencidos() from authenticated;
+revoke execute on function correos_registrados(text[]) from authenticated;
+grant execute on function correos_registrados(text[]) to service_role;
 alter default privileges in schema public revoke execute on functions from public, anon;
 
 -- ---------- Row Level Security ----------
@@ -800,7 +850,7 @@ create policy ln_read on lista_negra for select using (condominio_id = my_condo(
 create policy ln_adm  on lista_negra for all    using (condominio_id = my_condo() and my_rol()='admin');
 
 create policy al_read on alertas for select using (condominio_id = my_condo());
-create policy al_ins  on alertas for insert with check (condominio_id = my_condo());
+create policy al_ins  on alertas for insert with check (condominio_id = my_condo() and creado_por = auth.uid());
 create policy al_upd  on alertas for update using (condominio_id = my_condo() and es_staff());
 
 -- Finanzas

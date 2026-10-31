@@ -15,7 +15,7 @@ Los dos usan **la misma base de datos Supabase**. El esquema vive solo aquí, en
 - Pase de una visita: `https://jesusantonioaguilardev.github.io/Umbral-Web/pase.html?c=<código>`
 
 Contenido: [Estructura](#estructura) · [1. Base de datos](#1-instalar-la-base-de-datos) · [2. Configurar el panel](#2-configurar-el-panel) ·
-[3. Servir en local](#3-servir-el-panel-en-local) · [4. Publicar](#4-publicar-en-github-pages) · [Qué ve cada rol](#qué-ve-cada-rol) ·
+[Invitaciones](#invitaciones-por-correo-edge-function-invitar) · [3. Servir en local](#3-servir-el-panel-en-local) · [4. Publicar](#4-publicar-en-github-pages) · [Qué ve cada rol](#qué-ve-cada-rol) ·
 [Referencia SQL](#referencia-de-la-base-de-datos) · [Pendientes](#pendientes-para-producción)
 
 ---
@@ -25,6 +25,7 @@ Contenido: [Estructura](#estructura) · [1. Base de datos](#1-instalar-la-base-d
 ```
 index.html                ← panel (login y enrutamiento por rol)
 pase.html                 ← página pública que muestra el QR a la visita
+bienvenida.html           ← página del enlace de invitación: la persona define su nombre y contraseña
 css/styles.css            ← estilos y tokens (claro/oscuro)
 js/config.js              ← configuración: Supabase, módulos, zona horaria
 js/api.js                 ← todas las llamadas a Supabase (tablas y RPC)
@@ -35,6 +36,7 @@ js/app.js                 ← arranque, login y ruteo por rol
 supabase/schema.sql       ← esquema completo, idempotente
 supabase/seed_pruebas.sql ← datos de prueba (solo local, NO versionado)
 supabase/functions/notificar/ ← Edge Function que envía el push (FCM) y su README de despliegue
+supabase/functions/invitar/   ← Edge Function que manda las invitaciones por correo y su README de despliegue
 ```
 
 ## 1. Instalar la base de datos
@@ -50,10 +52,13 @@ supabase/functions/notificar/ ← Edge Function que envía el push (FCM) y su RE
    ```sql
    select umbral_setup('Residencial Las Palmas', 'Hermosillo', 'admin@ejemplo.com');
    ```
-6. Entra al panel como administrador y da de alta lo demás:
-   - **Unidades → + Unidad**.
-   - Guardias y residentes: crea su cuenta en *Authentication → Add user* y luego, en **Usuarios y roles → + Agregar usuario**,
-     escribe su correo, el rol y (para residentes) la unidad. El panel llama a `vincular_usuario`; no hace falta SQL.
+6. Configura las invitaciones por correo (una sola vez): sigue [Invitaciones por correo](#invitaciones-por-correo-edge-function-invitar).
+7. Entra al panel como administrador y da de alta lo demás. Hay dos caminos y ninguno necesita SQL:
+   - **Uno por uno:** **Unidades → + Unidad**; luego **Usuarios y roles → + Invitar usuario** con el correo, el nombre, el rol y
+     (para residentes) la unidad. La persona recibe un correo, define su contraseña en `bienvenida.html` y queda vinculada.
+   - **Todo de golpe:** **Importar CSV** (en *Usuarios y roles* o en *Unidades*). Descarga la plantilla, llénala y súbela; ver
+     [Importar desde CSV](#importar-unidades-y-usuarios-desde-csv).
+   - Si alguien ya tiene cuenta en *Authentication* (creada a mano), usa **Vincular cuenta existente**: no manda correo.
 
 El esquema **no trae datos de ejemplo**: todo arranca vacío.
 
@@ -77,9 +82,61 @@ cuya fecha de vencimiento pasó. Así los números son correctos desde el primer
 
 `schema.sql` crea las tablas `dispositivos` y `notificaciones` y los triggers que llenan la bandeja, pero **el envío no queda
 activo solo con el SQL**: falta desplegar la Edge Function `notificar`, guardar sus secretos (cuenta de servicio de Firebase y
-`NOTIFICAR_SECRETO`) y crear el Database Webhook. Sigue [`supabase/functions/notificar/README.md`](supabase/functions/notificar/README.md).
+`NOTIFICAR_SECRETO`) y crear el Database Webhook. Cada vez que cambie `supabase/functions/notificar/index.ts` vuelve a
+desplegarla con `supabase functions deploy notificar --no-verify-jwt` (por ejemplo, el canal `emergencias` de las alertas
+depende de la versión actual). Sigue [`supabase/functions/notificar/README.md`](supabase/functions/notificar/README.md).
 Sin eso, las filas se acumulan en `notificaciones` sin `enviada_at` y nadie recibe push. La app también necesita su
 `google-services.json` (ver el README de Umbral-App, sección *Notificaciones push (Android)*).
+
+### Invitaciones por correo (Edge Function `invitar`)
+
+El panel da de alta personas con la Edge Function `invitar`, que manda la invitación de Supabase Auth. Como `schema.sql` no
+puede desplegar funciones ni cambiar la configuración de Authentication, estos pasos se hacen a mano. El detalle (contrato,
+respuestas y pruebas) está en [`supabase/functions/invitar/README.md`](supabase/functions/invitar/README.md).
+
+1. Ejecuta `supabase/schema.sql` actualizado: crea la RPC `correos_registrados`, que solo puede usar la función.
+2. Configura un **SMTP propio** en *Project Settings → Authentication → SMTP Settings* y después sube el límite en
+   *Authentication → Rate Limits*. El correo integrado de Supabase solo manda unos pocos correos por hora: con él, una
+   importación de CSV falla con *"Se alcanzó el límite de correos por hora"*.
+3. Guarda el secreto con la página a la que lleva el correo:
+   ```bash
+   supabase secrets set URL_BIENVENIDA=https://jesusantonioaguilardev.github.io/Umbral-Web/bienvenida.html
+   ```
+   `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` los pone el runtime; no los guardes tú ni los copies al repositorio.
+4. En *Authentication → URL Configuration → Redirect URLs* agrega la misma URL
+   (`https://jesusantonioaguilardev.github.io/Umbral-Web/bienvenida.html`). Si no está en la lista, Supabase ignora el
+   `redirectTo` y manda al invitado al *Site URL*.
+5. Despliega la función **con la verificación de JWT activa** (sin `--no-verify-jwt`):
+   ```bash
+   supabase functions deploy invitar
+   ```
+   A diferencia de `notificar` (que la llama un webhook), a `invitar` la llama una persona con sesión, así que el gateway debe
+   rechazar a quien no la tenga. Revisa en *Edge Functions → invitar → Details* que *Enforce JWT Verification* esté encendido.
+6. Traduce la plantilla en *Authentication → Emails → Templates → Invite user*: asunto `Te invitaron a Umbral` y un cuerpo en
+   español que conserve `{{ .ConfirmationURL }}` (es el enlace que abre `bienvenida.html` con la sesión del invitado). Hay un
+   ejemplo listo en el README de la función.
+
+**Por qué la función no vincula:** `invitar` corre con la `service_role` y solo manda correos. El rol, la unidad y el
+condominio los asigna después el panel con `vincular_usuario`, con la sesión del admin. Así la regla de quién puede entrar a
+qué condominio (por ejemplo, rechazar a alguien que ya es de otro) vive en un solo lugar, el SQL, y la función no puede saltársela.
+Por lo mismo, para un correo que ya tenía cuenta responde `existente` sin decir de qué condominio es.
+
+### Importar unidades y usuarios desde CSV
+
+**Importar CSV** acepta un archivo cuya primera fila son los encabezados. Solo `unidad` es obligatoria como columna:
+
+| Columna | Qué es |
+|---|---|
+| `unidad` | Nombre de la unidad (`Casa 1`). Si no existe, se crea; si ya existe, no se modifica. Puede ir vacía solo en filas de guardia o admin |
+| `torre`, `propietario`, `clabe` | Datos de la unidad nueva (se toman de la primera fila de esa unidad). La CLABE debe tener 18 dígitos |
+| `correo` | Persona a invitar. Vacío = solo se crea la unidad |
+| `nombre` | Cómo aparece en caseta y en la app |
+| `rol` | `residente` (si va vacío), `guardia` o `admin`. También acepta `seguridad`, `caseta`, `vigilante`, `administrador`… |
+
+El panel muestra una vista previa con los errores por fila antes de importar; las filas con error no se importan. Después crea
+las unidades que falten, manda las invitaciones en lotes de 50 y vincula a cada persona con `vincular_usuario`. Al final muestra
+un resumen y deja descargar los errores en CSV. Acepta coma, punto y coma (Excel en español) o tabulador, y archivos en UTF-8 o
+Windows-1252; máximo 2,000 filas y 2 MB. No cierres la ventana mientras corre.
 
 ### Datos de prueba (`seed_pruebas.sql`)
 
@@ -159,8 +216,9 @@ Un cambio queda en línea cuando se fusiona a `main`; las ramas de trabajo no se
 
 - **guardia** → *Panel de caseta*: escaneo de QR con la cámara (o código a mano), resultado en verde o rojo con días y horario
   del pase, bitácora del día en tiempo real, visitantes esperados hoy, **visita sin pase** (con placa y revisión de la lista negra),
-  paquetería y botón de emergencia.
-- **admin** → *Panel administrativo*: resumen con KPIs, unidades, usuarios y roles, bitácora con filtros y CSV, pases y proveedores,
+  paquetería y botón de **emergencia** (push a todo el condominio). Las alertas abiertas se ven arriba hasta marcarlas atendidas.
+- **admin** → *Panel administrativo*: resumen con KPIs y botón de **emergencia** (con doble confirmación), unidades, usuarios y
+  roles (**invitar**, **importar CSV** o vincular una cuenta existente), bitácora con filtros y CSV, pases y proveedores,
   **lista negra**, reportes (CSV o PDF) y, según los módulos, comunicados, paquetería, tickets, reservaciones, encuestas,
   cobranza, pagos (con **Confirmar**) y egresos.
 - **residente** → se le indica que use la app móvil.
@@ -172,6 +230,14 @@ automáticamente. Para no marcar un cargo como pagado sin verificar, el trigger 
 `confirmado = false` y el cargo sigue pendiente (en la app aparece **En revisión**). Cuando administración revisa la referencia
 en su banco y pulsa **Confirmar**, el trigger `on_pago` marca el cargo como pagado. Los pagos que registra el administrador
 quedan confirmados de inmediato, y `kpis_admin` solo suma pagos confirmados.
+
+### Por qué una alerta llega a todo el condominio y tiene límite
+
+Una emergencia (incendio, intrusión, alguien herido) le importa a todo el condominio, no solo a caseta, así que el trigger
+`notificar_alerta` avisa a todas las personas con la app y sesión abierta, menos a quien la envió. Como eso multiplica el
+efecto de un toque accidental o de un abuso, hay tres frenos: en la app hay que mantener el botón 2 segundos, en el panel de
+administración se confirma dos veces y `limitar_alertas` deja a cada residente crear como máximo 2 alertas cada 10 minutos.
+La política `al_ins` exige que `creado_por` sea quien inserta, para que el mensaje siempre muestre la unidad real de quien la envió.
 
 ### Por qué la caseta revisa la lista negra en dos lugares
 
@@ -200,6 +266,7 @@ Todas son `security definer` salvo `marcar_vencidos`. Ninguna se puede llamar si
 | `emitir_cuotas` | `p_concepto text`, `p_monto numeric`, `p_vence date` | `int` (cargos creados) | Admin |
 | `registrar_dispositivo` | `p_token text`, `p_plataforma text` | `void` | Cualquier usuario con sesión y condominio (la app al iniciar sesión) |
 | `quitar_dispositivo` | `p_token text` | `void` | Cualquier usuario con sesión (la app al cerrar sesión) |
+| `correos_registrados` | `p_correos text[]` | `setof text` (correos en minúsculas) | Solo `service_role` (Edge Function `invitar`) |
 | `marcar_vencidos` | — | `void` | Solo SQL Editor y `pg_cron` |
 | `umbral_setup` | `p_condominio text`, `p_ciudad text`, `p_email_admin text` | `uuid` (id del condominio) | Solo SQL Editor |
 
@@ -218,7 +285,14 @@ espacios colapsados) o por placa (solo letras y números, en mayúsculas). Devue
 `{restringido: true, nombre, motivo}`.
 
 **`vincular_usuario(p_email, p_rol, p_unidad, p_nombre)`** — Incorpora al condominio del admin una cuenta que ya existe en
-Authentication. Falla si no existe la cuenta, si pertenece a otro condominio, si la unidad no es del condominio o si es residente sin unidad.
+Authentication (invitada con `invitar` o creada a mano). Falla si no existe la cuenta (*"…Invítala primero desde Usuarios →
+Invitar"*), si pertenece a otro condominio, si la unidad no es del condominio o si es residente sin unidad. El panel la llama
+después de cada invitación, también al importar un CSV.
+
+**`correos_registrados(p_correos)`** — De una lista de correos (revisa hasta 300, sin distinguir mayúsculas ni espacios),
+devuelve los que ya tienen cuenta en `auth.users`. Es `security definer` y no tiene permiso para `authenticated`: solo la
+`service_role` la puede llamar, desde la Edge Function `invitar`. Así nadie con sesión puede averiguar qué correos están
+registrados, incluidos los de otros condominios.
 
 **`desvincular_usuario(p_id)`** — Saca a una persona del condominio (quita condominio y unidad, y la deja como `residente`).
 No borra la cuenta. Un admin no puede desvincularse a sí mismo.
@@ -259,6 +333,7 @@ para que nadie se autonombre administrador desde la app.
 | `trg_validar_reservacion` | `reservaciones` | Rechaza reservaciones traslapadas en la misma área y fecha, o de un área de otro condominio |
 | `trg_proteger_notificacion` (`proteger_notificacion`) | `notificaciones` | El destinatario solo puede cambiar `leida`; lo demás lo escribe la Edge Function `notificar` con la service role (sin `auth.uid()`) |
 | `trg_limpiar_dispositivos` (`limpiar_dispositivos`) | `profiles` | Si alguien cambia o sale de condominio, borra sus dispositivos del condominio anterior para que deje de recibir sus avisos |
+| `trg_limitar_alertas` (`limitar_alertas`) | `alertas`, antes de `INSERT` | Un residente puede crear como máximo 2 alertas cada 10 minutos (*"Ya enviaste una alerta hace poco; caseta ya fue avisada"*); caseta y admin sin límite. Toma un candado por usuario para que dos envíos simultáneos no se salten el conteo |
 
 Además, `reservaciones` tiene la restricción `reservas_horas_validas` (`hora_fin > hora_inicio`) y `dispositivos` la
 restricción `dispositivos_plataforma_valida` (`android`, `ios`, `web` o `desktop`).
@@ -266,8 +341,8 @@ restricción `dispositivos_plataforma_valida` (`android`, `ios`, `web` o `deskto
 ### Triggers de notificación (push)
 
 Cada uno inserta una fila en `notificaciones` por destinatario; un **Database Webhook** en `INSERT` de esa tabla llama a la
-Edge Function `notificar`, que la envía por Firebase Cloud Messaging y anota `enviada_at` o `error`. Solo notifican a
-perfiles con rol `residente`. El webhook no está en `schema.sql`: se crea a mano (ver
+Edge Function `notificar`, que la envía por Firebase Cloud Messaging y anota `enviada_at` o `error`. Los de acceso, paquete y
+aviso solo notifican a perfiles con rol `residente`; el de alerta, a todo el condominio. El webhook no está en `schema.sql`: se crea a mano (ver
 [`supabase/functions/notificar/README.md`](supabase/functions/notificar/README.md)).
 
 | Trigger | Tabla y evento | Cuándo | A quién | Título | `datos.tipo` |
@@ -275,8 +350,11 @@ perfiles con rol `residente`. El webhook no está en `schema.sql`: se crea a man
 | `trg_notificar_acceso` (`notificar_acceso`) | `accesos`, después de `INSERT` | Acceso permitido, con unidad y tipo distinto de `residente` (visita, proveedor, paquetería, Airbnb) | Residentes de la unidad | *Tu visita llegó* (cuerpo: nombre y punto de acceso) | `acceso` + `acceso_id` |
 | `trg_notificar_paquete` (`notificar_paquete`) | `paquetes`, después de `INSERT` | Paquete sin entregar | Residentes de la unidad | *Llegó un paquete* (cuerpo: paquetería y descripción) | `paquete` + `paquete_id` |
 | `trg_notificar_aviso` (`notificar_aviso`) | `avisos`, después de `INSERT` | Siempre | Residentes con unidad del condominio, o solo los de la torre del aviso si tiene `torre` | Título del aviso (con *Importante:* si lo es); cuerpo recortado a 240 caracteres | `aviso` + `aviso_id` |
+| `trg_notificar_alerta` (`notificar_alerta`) | `alertas`, después de `INSERT` | Siempre | Todos los perfiles del condominio (cualquier rol) con al menos un dispositivo registrado, menos quien la creó | *Alerta de emergencia* (cuerpo: el mensaje, o *Emergencia* si va vacío; si la creó un residente, antecedido por su unidad, `Casa 14: …`; máximo 240 caracteres) | `alerta` + `alerta_id` |
 
 El acceso del propio residente (código personal) no notifica, para no avisarle de su propia entrada.
+Con `datos.tipo = "alerta"`, `notificar` manda en Android `channel_id: "emergencias"` (el canal *Emergencias* de la app); las
+demás llegan por el canal por defecto `umbral`.
 
 ### Tablas y acceso por rol (RLS)
 
@@ -289,7 +367,7 @@ Todas las tablas tienen RLS y se filtran por el condominio de quien consulta.
 | `pases` | Los de su unidad (crea y cancela) | Todos | Todos |
 | `accesos` (bitácora) | Los de su unidad | Lee y registra | Lee y registra |
 | `lista_negra` | No la ve | Lee | Lee y edita |
-| `alertas` | Lee y crea | Lee, crea y atiende | Lee, crea y atiende |
+| `alertas` | Lee; crea solo a su nombre (máx. 2 cada 10 min) | Lee, crea a su nombre y atiende | Lee, crea a su nombre y atiende |
 | `cargos`, `pagos` | Los de su unidad; reporta pagos | Sin acceso | Todo; confirma pagos |
 | `egresos` | Sin acceso | Sin acceso | Todo |
 | `avisos` | Lee | Lee | Todo |
@@ -304,7 +382,9 @@ Todas las tablas tienen RLS y se filtran por el condominio de quien consulta.
 
 La vista `resultados_encuestas` usa `security_invoker`, así respeta el RLS de quien consulta.
 El registro normal de `dispositivos` va por `registrar_dispositivo`. En `notificaciones` solo escriben los triggers
-`notificar_*` y la Edge Function `notificar`; hoy solo los residentes reciben filas.
+`notificar_*` y la Edge Function `notificar`; caseta y administración solo reciben filas de alertas.
+En `alertas`, la política `al_ins` exige `condominio_id = my_condo()` y `creado_por = auth.uid()` (la columna toma `auth.uid()`
+por defecto); `al_read` deja leer las del condominio y solo staff (`al_upd`) las marca atendidas.
 Tiempo real (`supabase_realtime`): `accesos`, `alertas`, `paquetes`, `tickets`, `avisos`, `lista_negra` y `notificaciones`.
 
 ---
@@ -317,7 +397,10 @@ Tiempo real (`supabase_realtime`): `accesos`, `alertas`, `paquetes`, `tickets`, 
 - **Pago con tarjeta:** la app llama a `reportarPago` con método `tarjeta`; falta integrar un procesador antes de esa llamada.
 - **Push en iOS:** la base de datos y la Edge Function ya lo soportan; falta la parte nativa de la app en Xcode
   (ver `iosApp/PUSH_IOS.md` en Umbral-App).
-- **Push de alerta de emergencia:** las `alertas` no tienen trigger de notificación; hoy solo hay push de visita, paquete y aviso.
+- **Recuperar contraseña:** `bienvenida.html` ya acepta enlaces de recuperación (`type=recovery`), pero ni el panel ni la app
+  tienen todavía un botón *¿Olvidaste tu contraseña?* que los envíe.
+- **Push a caseta y administración desde el navegador:** el panel web no registra dispositivos; las alertas solo les llegan por
+  push si usan la app con sesión abierta (y en Android 13+ con el permiso de notificaciones concedido).
 - **Fotos** en paquetes y tickets: las columnas `foto_url` ya existen.
 - **Zona horaria configurable en SQL:** hoy `America/Hermosillo` está fija en `schema.sql`.
 

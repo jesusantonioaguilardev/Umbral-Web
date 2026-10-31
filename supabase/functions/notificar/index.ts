@@ -129,7 +129,10 @@ async function enviarFcm(token: string, n: Notificacion): Promise<Resultado> {
       token,
       notification: { title: n.titulo, body: n.cuerpo ?? "" },
       data,
-      android: { priority: "HIGH" },
+      // Las alertas de emergencia usan el canal "emergencias" de la app aunque esté en segundo plano
+      android: data.tipo === "alerta"
+        ? { priority: "HIGH", notification: { channel_id: "emergencias", default_vibrate_timings: true } }
+        : { priority: "HIGH" },
       apns: { payload: { aps: { sound: "default" } } },
     },
   };
