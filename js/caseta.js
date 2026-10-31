@@ -2,7 +2,7 @@
    Escaneo de QR, validación, bitácora en tiempo real, esperados del día,
    paquetería y alerta de emergencia. Pensado para tableta o PC en caseta. */
 window.Caseta = (function () {
-  const { esc, h, time, toast, form, TIPOS, initials, DIAS } = UI;
+  const { esc, h, time, toast, form, confirmDlg, TIPOS, initials, DIAS } = UI;
   const PUNTO = (window.UMBRAL_CONFIG || {}).PUNTO_ACCESO || "Acceso principal";
   const COMUNIDAD = !!((window.UMBRAL_CONFIG || {}).MODULOS || {}).comunidad;
 
@@ -57,7 +57,7 @@ window.Caseta = (function () {
     const $ = (s) => el.querySelector(s);
 
     // Reloj
-    const tick = () => ($("#reloj").textContent = new Date().toLocaleTimeString("es-MX", { hour12: false }));
+    const tick = () => ($("#reloj").textContent = new Date().toLocaleTimeString("es-MX", { timeZone: UI.zona.tz, hour12: false }));
     tick(); timers.push(setInterval(tick, 1000));
 
     // ---------- Validación ----------
@@ -145,23 +145,39 @@ window.Caseta = (function () {
     }
     const logItem = (r) => `
       <div class="log-item"><time>${time(r.created_at)}</time>
-        <div><b>${esc(r.nombre)}</b><div class="small muted">${esc(r.unidad || "—")}${r.autorizo ? " · " + esc(r.autorizo) : ""}${r.motivo ? " · " + esc(r.motivo) : ""}</div></div>
+        <div><b>${esc(r.nombre)}</b><div class="small muted">${esc(r.unidad || "—")}${r.placa ? " · Placa " + esc(r.placa) : ""}${r.autorizo ? " · " + esc(r.autorizo) : ""}${r.motivo ? " · " + esc(r.motivo) : ""}</div></div>
         <span class="chip ${r.permitido ? "" : "bad"}">${r.permitido ? esc(TIPOS[r.tipo] || r.tipo) : "Denegado"}</span></div>`;
 
     // ---------- Acciones ----------
     const unidadOpts = () => unidades.map((u) => ({ value: u.id, label: u.nombre + (u.propietario ? " · " + u.propietario : "") }));
+    const RESTRINGIDA = "Persona restringida por administración";
     $("#manual").onclick = async () => {
+      let negadoPorLista = false;
       const d = await form({
         title: "Visita sin pase", submit: "Registrar",
         fields: [
           { name: "nombre", label: "Nombre del visitante", required: true },
+          { name: "placa", label: "Placa del vehículo (opcional)", placeholder: "ABC-123-D" },
           { name: "unidad_id", label: "Unidad que visita", type: "select", options: unidadOpts() },
           { name: "tipo", label: "Tipo", type: "select", options: Object.entries(TIPOS).filter(([k]) => k !== "residente").map(([value, label]) => ({ value, label })) },
           { name: "permitido", label: "¿El residente autorizó por llamada?", type: "select", options: [{ value: "1", label: "Sí, autorizado" }, { value: "0", label: "No, se negó el acceso" }] }
         ],
-        onSubmit: (v) => API.registrarManual({ nombre: v.nombre, unidad_id: v.unidad_id, tipo: v.tipo, permitido: v.permitido === "1", motivo: v.permitido === "1" ? null : "No autorizado por residente", punto: PUNTO })
+        onSubmit: async (v) => {
+          const nombre = v.nombre.trim(), placa = (v.placa || "").trim().toUpperCase() || null;
+          let permitido = v.permitido === "1", motivo = permitido ? null : "No autorizado por residente";
+          negadoPorLista = false;
+          if (permitido) { // antes de dejar pasar, revisa la lista negra del condominio
+            let ln;
+            try { ln = await API.enListaNegra(nombre, placa); }
+            catch (e) { throw new Error("No se pudo revisar la lista negra: " + e.message); }
+            if (ln?.restringido && !(await confirmDlg("Persona restringida", `Persona restringida: ${ln.nombre || nombre} · ${ln.motivo || "Sin motivo registrado"}. ¿Registrar de todos modos?`))) {
+              permitido = false; motivo = RESTRINGIDA; negadoPorLista = true;
+            }
+          }
+          return API.registrarManual({ nombre, placa, unidad_id: v.unidad_id, tipo: v.tipo, permitido, motivo, punto: PUNTO, ...(negadoPorLista ? { autorizo: "Guardia · lista negra" } : {}) });
+        }
       });
-      if (d) { toast("Registrado en bitácora"); tab = "bitacora"; render(); }
+      if (d) { toast(negadoPorLista ? "Registrado como acceso negado" : "Registrado en bitácora"); tab = "bitacora"; render(); }
     };
     if ($("#paq")) $("#paq").onclick = async () => {
       const d = await form({

@@ -199,6 +199,6 @@ label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px
 .days label { display: inline-flex; align-items: center; gap: 4px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); margin: 0; cursor: pointer; }
 @media (max-width: 600px) {
   .user-pill .small, .topbar .brand span { display: none; }
-  .topbar { padding: 10px 16px; gap: 8px; }
+  .topbar { padding: 10px 16px; gap: 8px; flex-wrap: wrap; }
   .alert-banner { flex-wrap: wrap; padding: 12px 16px; }
 }
