@@ -612,6 +612,137 @@ create or replace view resultados_encuestas with (security_invoker = true) as
   select e.id encuesta_id, v.opcion, count(*) votos
   from encuestas e join votos v on v.encuesta_id = e.id group by 1,2;
 
+-- ---------- Notificaciones push (FCM) ----------
+-- Teléfonos/navegadores donde cada usuario recibe push. Un token pertenece a un solo perfil a la vez.
+create table if not exists dispositivos (
+  id uuid primary key default gen_random_uuid(),
+  profile_id uuid not null references profiles(id) on delete cascade default auth.uid(),
+  condominio_id uuid not null references condominios(id),
+  token text not null unique,
+  plataforma text not null,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+alter table dispositivos drop constraint if exists dispositivos_plataforma_valida;
+alter table dispositivos add constraint dispositivos_plataforma_valida check (plataforma in ('android','ios','web','desktop'));
+create index if not exists dispositivos_perfil on dispositivos(profile_id);
+
+-- Bandeja: cada fila es una notificación para un destinatario. La crean solo los triggers de abajo;
+-- un Database Webhook en INSERT llama a la Edge Function "notificar", que la envía y marca enviada_at o error.
+create table if not exists notificaciones (
+  id bigserial primary key,
+  condominio_id uuid not null references condominios(id),
+  profile_id uuid not null references profiles(id) on delete cascade,   -- destinatario
+  titulo text not null,
+  cuerpo text,
+  datos jsonb not null default '{}',
+  leida boolean not null default false,
+  enviada_at timestamptz,
+  error text,
+  created_at timestamptz default now()
+);
+create index if not exists notif_perfil_fecha on notificaciones(profile_id, created_at desc);
+create index if not exists notif_no_leidas on notificaciones(profile_id) where not leida;
+
+-- El cliente registra su token con esta RPC: si el token era de otra cuenta (mismo teléfono, otra sesión), pasa a la actual.
+create or replace function registrar_dispositivo(p_token text, p_plataforma text) returns void
+language plpgsql security definer set search_path = public as $$
+declare c uuid := my_condo(); t text := nullif(trim(p_token), '');
+begin
+  if auth.uid() is null then raise exception 'Inicia sesión'; end if;
+  if c is null then raise exception 'Tu cuenta no está vinculada a un condominio'; end if;
+  if t is null then raise exception 'Token vacío'; end if;
+  if p_plataforma is null or p_plataforma not in ('android','ios','web','desktop') then raise exception 'Plataforma inválida'; end if;
+  insert into dispositivos (profile_id, condominio_id, token, plataforma) values (auth.uid(), c, t, p_plataforma)
+    on conflict (token) do update set profile_id = excluded.profile_id, condominio_id = excluded.condominio_id,
+      plataforma = excluded.plataforma, updated_at = now();
+end $$;
+
+-- Al cerrar sesión: el cliente quita su token (solo puede quitar uno suyo)
+create or replace function quitar_dispositivo(p_token text) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  delete from dispositivos where token = trim(p_token) and profile_id = auth.uid();
+end $$;
+
+-- Si alguien cambia o sale de condominio, sus dispositivos dejan de recibir push del anterior
+create or replace function limpiar_dispositivos() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  delete from dispositivos where profile_id = new.id and condominio_id is distinct from new.condominio_id;
+  return new;
+end $$;
+drop trigger if exists trg_limpiar_dispositivos on profiles;
+create trigger trg_limpiar_dispositivos after update of condominio_id on profiles
+  for each row when (new.condominio_id is distinct from old.condominio_id) execute function limpiar_dispositivos();
+
+-- El destinatario solo puede marcar leida; lo demás lo escribe la Edge Function (service role, auth.uid() nulo)
+create or replace function proteger_notificacion() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null then return new; end if;
+  if (new.id, new.condominio_id, new.profile_id, new.titulo, new.cuerpo, new.datos, new.enviada_at, new.error, new.created_at)
+     is distinct from (old.id, old.condominio_id, old.profile_id, old.titulo, old.cuerpo, old.datos, old.enviada_at, old.error, old.created_at) then
+    raise exception 'Solo puedes marcar la notificación como leída';
+  end if;
+  return new;
+end $$;
+drop trigger if exists trg_proteger_notificacion on notificaciones;
+create trigger trg_proteger_notificacion before update on notificaciones
+  for each row execute function proteger_notificacion();
+
+-- Visita, proveedor, paquetería o Airbnb que entró: avisa a los residentes de la unidad
+create or replace function notificar_acceso() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  insert into notificaciones (condominio_id, profile_id, titulo, cuerpo, datos)
+    select new.condominio_id, p.id, 'Tu visita llegó',
+           new.nombre || ' entró por ' || coalesce(nullif(trim(new.punto), ''), 'Acceso principal'),
+           jsonb_build_object('tipo', 'acceso', 'acceso_id', new.id)
+    from profiles p
+    where p.rol = 'residente' and p.unidad_id = new.unidad_id and p.condominio_id = new.condominio_id;
+  return new;
+end $$;
+drop trigger if exists trg_notificar_acceso on accesos;
+create trigger trg_notificar_acceso after insert on accesos
+  for each row when (new.permitido and new.unidad_id is not null and new.tipo <> 'residente')
+  execute function notificar_acceso();
+
+-- Paquete recibido en caseta: avisa a los residentes de la unidad
+create or replace function notificar_paquete() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  insert into notificaciones (condominio_id, profile_id, titulo, cuerpo, datos)
+    select new.condominio_id, p.id, 'Llegó un paquete',
+           concat_ws(' · ', 'Recógelo en caseta', nullif(trim(new.paqueteria), ''), nullif(trim(new.descripcion), '')),
+           jsonb_build_object('tipo', 'paquete', 'paquete_id', new.id)
+    from profiles p
+    where p.rol = 'residente' and p.unidad_id = new.unidad_id and p.condominio_id = new.condominio_id;
+  return new;
+end $$;
+drop trigger if exists trg_notificar_paquete on paquetes;
+create trigger trg_notificar_paquete after insert on paquetes
+  for each row when (new.entregado_at is null) execute function notificar_paquete();
+
+-- Aviso nuevo: a todos los residentes del condominio, o solo a los de su torre si el aviso la tiene
+create or replace function notificar_aviso() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare torre_aviso text := nullif(trim(new.torre), '');
+begin
+  insert into notificaciones (condominio_id, profile_id, titulo, cuerpo, datos)
+    select new.condominio_id, p.id,
+           case when new.importante then 'Importante: ' || new.titulo else new.titulo end,
+           left(nullif(trim(new.cuerpo), ''), 240),
+           jsonb_build_object('tipo', 'aviso', 'aviso_id', new.id)
+    from profiles p join unidades u on u.id = p.unidad_id and u.condominio_id = new.condominio_id
+    where p.rol = 'residente' and p.condominio_id = new.condominio_id
+      and (torre_aviso is null or u.torre = torre_aviso);
+  return new;
+end $$;
+drop trigger if exists trg_notificar_aviso on avisos;
+create trigger trg_notificar_aviso after insert on avisos
+  for each row execute function notificar_aviso();
+
 -- ---------- Permisos de funciones ----------
 -- Nadie sin sesión puede llamar funciones; las de configuración solo desde el SQL Editor.
 revoke execute on all functions in schema public from public, anon;
@@ -638,6 +769,8 @@ alter table reservaciones enable row level security;
 alter table encuestas     enable row level security;
 alter table votos         enable row level security;
 alter table lista_negra   enable row level security;
+alter table dispositivos  enable row level security;
+alter table notificaciones enable row level security;
 
 -- Re-ejecutable: borra las políticas previas antes de crearlas
 do $$ declare r record; begin
@@ -702,6 +835,18 @@ create policy vt_read on votos for select using (exists (select 1 from encuestas
 create policy vt_ins  on votos for insert with check (unidad_id = my_unidad() and exists (select 1 from encuestas e
   where e.id = encuesta_id and e.condominio_id = my_condo() and (e.cierra is null or e.cierra >= (now() at time zone 'America/Hermosillo')::date)));
 
+-- Push: cada quien solo ve y administra sus propios dispositivos (el registro normal va por registrar_dispositivo)
+create policy disp_read on dispositivos for select using (profile_id = auth.uid() and condominio_id = my_condo());
+create policy disp_ins  on dispositivos for insert with check (profile_id = auth.uid() and condominio_id = my_condo());
+create policy disp_upd  on dispositivos for update using (profile_id = auth.uid() and condominio_id = my_condo())
+  with check (profile_id = auth.uid() and condominio_id = my_condo());
+create policy disp_del  on dispositivos for delete using (profile_id = auth.uid() and condominio_id = my_condo());
+
+-- Bandeja: el destinatario ve las suyas y solo marca leida (trigger proteger_notificacion). Sin insert ni delete desde el cliente.
+create policy notif_read on notificaciones for select using (profile_id = auth.uid() and condominio_id = my_condo());
+create policy notif_upd  on notificaciones for update using (profile_id = auth.uid() and condominio_id = my_condo())
+  with check (profile_id = auth.uid() and condominio_id = my_condo());
+
 -- ---------- Archivos adjuntos de avisos (Supabase Storage) ----------
 -- Bucket público: el enlace lleva un identificador aleatorio; se guarda en carpetas por condominio.
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
@@ -719,9 +864,9 @@ create policy avisos_files_ins on storage.objects for insert to authenticated
 create policy avisos_files_del on storage.objects for delete to authenticated
   using (bucket_id = 'avisos' and (storage.foldername(name))[1] = public.my_condo()::text and public.my_rol() = 'admin');
 
--- ---------- Tiempo real (dashboard caseta / admin) ----------
+-- ---------- Tiempo real (dashboard caseta / admin y bandeja de notificaciones) ----------
 do $$ declare t text; begin
-  foreach t in array array['accesos','alertas','paquetes','tickets','avisos','lista_negra'] loop
+  foreach t in array array['accesos','alertas','paquetes','tickets','avisos','lista_negra','notificaciones'] loop
     if not exists (select 1 from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename=t) then
       execute format('alter publication supabase_realtime add table %I', t);
     end if;
