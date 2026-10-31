@@ -238,12 +238,20 @@ window.Admin = (function () {
 
       async pagos(c) {
         const ps = await API.pagos();
-        const total = ps.reduce((s, p) => s + +p.monto, 0);
-        c.innerHTML = head("Pagos recibidos", `${ps.length} pagos · ${money(total)}`, `<button class="btn" id="csv">Exportar CSV</button>`) + `
-          <div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>Fecha</th><th>Unidad</th><th>Método</th><th>Referencia / CEP</th><th class="num">Monto</th></tr></thead><tbody>
-          ${ps.map((p) => `<tr><td>${dateTime(p.created_at)}</td><td><b>${esc(p.unidad)}</b></td><td><span class="chip">${esc(p.metodo.toUpperCase())}</span></td><td class="small muted">${esc(p.referencia || "—")}</td><td class="num">${money(p.monto)}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">Aún no hay pagos</td></tr>`}
+        const total = ps.filter((p) => p.confirmado).reduce((s, p) => s + +p.monto, 0);
+        const porConfirmar = ps.filter((p) => !p.confirmado).length;
+        c.innerHTML = head("Pagos recibidos", `${ps.length} pagos · ${money(total)} confirmados${porConfirmar ? ` · ${porConfirmar} por confirmar` : ""}`, `<button class="btn" id="csv">Exportar CSV</button>`) + `
+          <div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>Fecha</th><th>Unidad</th><th>Método</th><th>Referencia / CEP</th><th class="num">Monto</th><th>Estado</th></tr></thead><tbody>
+          ${ps.map((p) => `<tr><td>${dateTime(p.created_at)}</td><td><b>${esc(p.unidad)}</b></td><td><span class="chip">${esc(p.metodo.toUpperCase())}</span></td><td class="small muted">${esc(p.referencia || "—")}</td><td class="num">${money(p.monto)}</td>
+            <td>${p.confirmado ? `<span class="chip ok">Confirmado</span>` : `<button class="btn" data-ok="${esc(p.id)}">Confirmar</button>`}</td></tr>`).join("") || `<tr><td colspan="6" class="empty">Aún no hay pagos</td></tr>`}
           </tbody></table></div></div>`;
-        c.querySelector("#csv").onclick = () => downloadCsv("pagos.csv", [["fecha", "unidad", "metodo", "referencia", "monto"], ...ps.map((p) => [p.created_at, p.unidad, p.metodo, p.referencia || "", p.monto])]);
+        c.querySelectorAll("[data-ok]").forEach((b) => (b.onclick = async () => {
+          const p = ps.find((x) => x.id === b.dataset.ok);
+          if (await confirmDlg("Confirmar pago", `${money(p.monto)} de ${p.unidad}. Verifica antes la referencia en tu banco; el cargo quedará como pagado.`)) {
+            await API.confirmarPago(p.id); toast("Pago confirmado"); refresh();
+          }
+        }));
+        c.querySelector("#csv").onclick = () => downloadCsv("pagos.csv", [["fecha", "unidad", "metodo", "referencia", "monto", "confirmado"], ...ps.map((p) => [p.created_at, p.unidad, p.metodo, p.referencia || "", p.monto, p.confirmado ? "si" : "no"])]);
       },
 
       async egresos(c) {

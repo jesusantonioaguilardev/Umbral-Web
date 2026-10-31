@@ -93,6 +93,7 @@
       async emitirCuotas(concepto, monto, vence) { return q(sb.rpc("emitir_cuotas", { p_concepto: concepto, p_monto: monto, p_vence: vence })); },
       async crearCargo(c) { return q(sb.from("cargos").insert({ ...c, condominio_id: me.condominio_id }).select().single()); },
       async registrarPago(p) { return q(sb.from("pagos").insert({ ...p, condominio_id: me.condominio_id }).select().single()); },
+      async confirmarPago(id) { return q(sb.from("pagos").update({ confirmado: true }).eq("id", id)); },
       async egresos() { return q(sb.from("egresos").select("*").order("fecha", { ascending: false }).limit(300)); },
       async crearEgreso(e) { return q(sb.from("egresos").insert({ ...e, condominio_id: me.condominio_id }).select().single()); },
       async avisos() { return q(sb.from("avisos").select("*").order("created_at", { ascending: false })); },

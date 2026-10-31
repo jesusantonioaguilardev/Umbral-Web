@@ -205,7 +205,8 @@ begin
     values (p.condominio_id,p.id,p.unidad_id,p.visitante,p.tipo,ok,motivo,autor,auth.uid(),p_punto);
 
   return json_build_object('permitido',ok,'motivo',motivo,'visitante',p.visitante,'tipo',p.tipo,
-    'unidad',u.nombre,'autorizo',autor,'modalidad',p.modalidad);
+    'unidad',u.nombre,'autorizo',autor,'modalidad',p.modalidad,
+    'dias',p.dias,'hora_inicio',to_char(p.hora_inicio,'HH24:MI'),'hora_fin',to_char(p.hora_fin,'HH24:MI'));
 end $$;
 
 -- Código personal dinámico del residente (válido 30 segundos)
@@ -247,14 +248,37 @@ create table if not exists pagos (
   created_at timestamptz default now()
 );
 
--- Al registrar un pago, marca el cargo como pagado
+-- Los pagos que reporta el residente quedan por confirmar hasta que administración los revisa
+alter table pagos add column if not exists confirmado boolean not null default true;
+
+-- El residente solo reporta pagos de cargos de su unidad, una vez, y siempre sin confirmar
+create or replace function proteger_pago() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.cargo_id is not null and not exists
+      (select 1 from cargos where id = new.cargo_id and unidad_id = new.unidad_id and condominio_id = new.condominio_id) then
+    raise exception 'El cargo no corresponde a la unidad';
+  end if;
+  if auth.uid() is null or my_rol() = 'admin' then return new; end if;
+  new.confirmado := false;
+  if exists (select 1 from pagos where cargo_id = new.cargo_id and not confirmado) then
+    raise exception 'Ya reportaste este pago; administración lo está revisando';
+  end if;
+  return new;
+end $$;
+drop trigger if exists trg_proteger_pago on pagos;
+create trigger trg_proteger_pago before insert on pagos for each row execute function proteger_pago();
+
+-- Al registrar o confirmar un pago, marca el cargo como pagado
 create or replace function on_pago() returns trigger language plpgsql security definer set search_path = public as $$
 begin
-  if new.cargo_id is not null then update cargos set estado = 'pagado' where id = new.cargo_id; end if;
+  if new.confirmado and new.cargo_id is not null then
+    update cargos set estado = 'pagado' where id = new.cargo_id and unidad_id = new.unidad_id;
+  end if;
   return new;
 end $$;
 drop trigger if exists trg_pago on pagos;
-create trigger trg_pago after insert on pagos for each row execute function on_pago();
+create trigger trg_pago after insert or update of confirmado on pagos for each row execute function on_pago();
 
 create table if not exists egresos (
   id uuid primary key default gen_random_uuid(),
@@ -289,7 +313,7 @@ declare c uuid := my_condo(); r json;
 begin
   if my_rol() is distinct from 'admin' then raise exception 'Solo administración'; end if;
   select json_build_object(
-    'cobrado_mes', coalesce((select sum(monto) from pagos where condominio_id=c and date_trunc('month',created_at)=date_trunc('month',now())),0),
+    'cobrado_mes', coalesce((select sum(monto) from pagos where condominio_id=c and confirmado and date_trunc('month',created_at)=date_trunc('month',now())),0),
     'cartera_vencida', coalesce((select sum(monto) from cargos where condominio_id=c and estado='vencido'),0),
     'unidades', (select count(*) from unidades where condominio_id=c),
     'unidades_al_corriente', (select count(*) from unidades un where condominio_id=c and not exists
@@ -299,7 +323,7 @@ begin
     'paquetes_pendientes', (select count(*) from paquetes where condominio_id=c and entregado_at is null),
     'meses', (select json_agg(m order by m.mes) from (
         select to_char(g,'YYYY-MM') mes,
-          coalesce((select sum(monto) from pagos where condominio_id=c and date_trunc('month',created_at)=g),0) ingresos,
+          coalesce((select sum(monto) from pagos where condominio_id=c and confirmado and date_trunc('month',created_at)=g),0) ingresos,
           coalesce((select sum(monto) from egresos where condominio_id=c and date_trunc('month',fecha)=g),0) egresos
         from generate_series(date_trunc('month',now())-interval '5 months', date_trunc('month',now()), interval '1 month') g) m)
   ) into r;
@@ -485,7 +509,8 @@ create table if not exists votos (
   primary key (encuesta_id, unidad_id)
 );
 
-create or replace view resultados_encuestas as
+-- security_invoker: la vista respeta el RLS de quien consulta (solo su condominio)
+create or replace view resultados_encuestas with (security_invoker = true) as
   select e.id encuesta_id, v.opcion, count(*) votos
   from encuestas e join votos v on v.encuesta_id = e.id group by 1,2;
 
@@ -547,6 +572,7 @@ create policy cargos_read on cargos for select using (condominio_id = my_condo()
 create policy cargos_adm  on cargos for all    using (condominio_id = my_condo() and my_rol()='admin');
 create policy pagos_read  on pagos  for select using (condominio_id = my_condo() and (my_rol()='admin' or unidad_id = my_unidad()));
 create policy pagos_ins   on pagos  for insert with check (condominio_id = my_condo() and (my_rol()='admin' or unidad_id = my_unidad()));
+create policy pagos_adm   on pagos  for update using (condominio_id = my_condo() and my_rol()='admin');
 create policy egr_adm     on egresos for all   using (condominio_id = my_condo() and my_rol()='admin');
 
 -- Comunidad
@@ -569,8 +595,9 @@ create policy rs_del  on reservaciones for delete using (my_rol()='admin' or uni
 
 create policy en_read on encuestas for select using (condominio_id = my_condo());
 create policy en_adm  on encuestas for all    using (condominio_id = my_condo() and my_rol()='admin');
-create policy vt_read on votos for select using (true);
-create policy vt_ins  on votos for insert with check (unidad_id = my_unidad());
+create policy vt_read on votos for select using (exists (select 1 from encuestas e where e.id = encuesta_id and e.condominio_id = my_condo()));
+create policy vt_ins  on votos for insert with check (unidad_id = my_unidad() and exists (select 1 from encuestas e
+  where e.id = encuesta_id and e.condominio_id = my_condo() and (e.cierra is null or e.cierra >= (now() at time zone 'America/Hermosillo')::date)));
 
 -- ---------- Archivos adjuntos de avisos (Supabase Storage) ----------
 -- Bucket público: el enlace lleva un identificador aleatorio; se guarda en carpetas por condominio.
