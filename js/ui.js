@@ -2,8 +2,39 @@
 (function () {
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const money = (n) => (n < 0 ? "-$" : "$") + Math.abs(Number(n || 0)).toLocaleString("es-MX", { maximumFractionDigits: 0 });
-  const time = (d) => new Date(d).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit", hour12: false });
-  const date = (d) => new Date(String(d).length === 10 ? d + "T12:00" : d).toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" });
+
+  /* Zona horaria del condominio (no la del navegador). Fechas "YYYY-MM-DD" = día civil en esa zona. */
+  const zona = (function () {
+    let tz = (window.UMBRAL_CONFIG || {}).ZONA_HORARIA || "America/Hermosillo";
+    try { new Intl.DateTimeFormat("en-US", { timeZone: tz }); } catch (e) { console.warn("ZONA_HORARIA inválida:", tz); tz = "America/Hermosillo"; }
+    const fmt = new Intl.DateTimeFormat("en-US", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23", weekday: "short" });
+    const WD = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
+    const pad = (n) => String(n).padStart(2, "0");
+    // Partes de fecha/hora de un instante en la zona: {y, m (1-12), d, h, mi, s, dow (1=lun … 7=dom)}
+    const partes = (x = new Date()) => {
+      const p = {}; fmt.formatToParts(new Date(x)).forEach(({ type, value }) => (p[type] = value));
+      return { y: +p.year, m: +p.month, d: +p.day, h: +p.hour % 24, mi: +p.minute, s: +p.second, dow: WD[p.weekday] };
+    };
+    // Desfase de la zona respecto a UTC en minutos (Hermosillo: -420), calculado con Intl
+    const desfase = (x = new Date()) => { const t = new Date(x).getTime(), p = partes(t); return Math.round((Date.UTC(p.y, p.m - 1, p.d, p.h, p.mi, p.s) - t) / 6e4); };
+    const ymd = (x = new Date()) => { const p = partes(x); return `${p.y}-${pad(p.m)}-${pad(p.d)}`; };
+    // Hora civil en la zona ("YYYY-MM-DD" + "HH:MM[:SS[.mmm]]") → ISO UTC
+    const aUTC = (dia, hora = "00:00") => {
+      const [y, m, d] = dia.split("-").map(Number), [hh, mm, ss = "0"] = hora.split(":"), [s, ms = "0"] = String(ss).split(".");
+      const base = Date.UTC(y, m - 1, d, +hh, +mm, +s, +ms.padEnd(3, "0"));
+      let t = base - desfase(base) * 6e4;
+      t = base - desfase(t) * 6e4; // segundo paso por si cae en cambio de horario
+      return new Date(t).toISOString();
+    };
+    const sumarDias = (dia, n) => new Date(Date.UTC(...dia.split("-").map((v, i) => +v - (i === 1 ? 1 : 0))) + n * 864e5).toISOString().slice(0, 10);
+    return { tz, partes, desfase, ymd, hoy: () => ymd(), aUTC, inicioDia: (dia = ymd()) => aUTC(dia), finDia: (dia = ymd()) => aUTC(dia, "23:59:59.999"), sumarDias };
+  })();
+
+  const time = (d) => new Date(d).toLocaleTimeString("es-MX", { timeZone: zona.tz, hour: "2-digit", minute: "2-digit", hour12: false });
+  // Fecha sola (YYYY-MM-DD) se muestra tal cual; un instante se convierte a la zona
+  const date = (d) => String(d).length === 10
+    ? new Date(d + "T12:00Z").toLocaleDateString("es-MX", { timeZone: "UTC", day: "numeric", month: "short", year: "numeric" })
+    : new Date(d).toLocaleDateString("es-MX", { timeZone: zona.tz, day: "numeric", month: "short", year: "numeric" });
   const dateTime = (d) => date(d) + " · " + time(d);
   const initials = (n) => String(n || "?").split(" ").map((w) => w[0]).slice(0, 2).join("").toUpperCase();
   const DIAS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
@@ -79,5 +110,5 @@
   }
   try { const t = localStorage.getItem("umbral_theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
 
-  window.UI = { esc, money, time, date, dateTime, initials, h, toast, form, confirmDlg, themeToggle, DIAS, TIPOS, ROLES };
+  window.UI = { esc, money, zona, time, date, dateTime, initials, h, toast, form, confirmDlg, themeToggle, DIAS, TIPOS, ROLES };
 })();

@@ -286,9 +286,11 @@ create table if not exists egresos (
   concepto text not null,
   categoria text,
   monto numeric(12,2) not null,
-  fecha date not null default current_date,
+  fecha date not null default ((now() at time zone 'America/Hermosillo')::date),
   created_at timestamptz default now()
 );
+-- "Hoy" en la zona del negocio también para tablas ya creadas
+alter table egresos alter column fecha set default ((now() at time zone 'America/Hermosillo')::date);
 
 -- Emite la cuota ordinaria a todas las unidades
 create or replace function emitir_cuotas(p_concepto text, p_monto numeric, p_vence date)
@@ -304,28 +306,32 @@ end $$;
 
 -- Marca vencidos (programar con pg_cron diario si se desea)
 create or replace function marcar_vencidos() returns void language sql as
-$$ update cargos set estado='vencido' where estado='pendiente' and vence < current_date $$;
+$$ update cargos set estado='vencido' where estado='pendiente' and vence < (now() at time zone 'America/Hermosillo')::date $$;
 
--- KPIs del mes para el comité
+-- KPIs del mes para el comité (día y mes según America/Hermosillo)
 create or replace function kpis_admin() returns json
 language plpgsql security definer set search_path = public as $$
 declare c uuid := my_condo(); r json;
+  ahora_local timestamp := now() at time zone 'America/Hermosillo';
+  inicio_hoy timestamptz := date_trunc('day', ahora_local) at time zone 'America/Hermosillo';
+  inicio_mes timestamptz := date_trunc('month', ahora_local) at time zone 'America/Hermosillo';
 begin
   if my_rol() is distinct from 'admin' then raise exception 'Solo administración'; end if;
   select json_build_object(
-    'cobrado_mes', coalesce((select sum(monto) from pagos where condominio_id=c and confirmado and date_trunc('month',created_at)=date_trunc('month',now())),0),
+    'cobrado_mes', coalesce((select sum(monto) from pagos where condominio_id=c and confirmado and created_at >= inicio_mes),0),
     'cartera_vencida', coalesce((select sum(monto) from cargos where condominio_id=c and estado='vencido'),0),
     'unidades', (select count(*) from unidades where condominio_id=c),
     'unidades_al_corriente', (select count(*) from unidades un where condominio_id=c and not exists
         (select 1 from cargos cg where cg.unidad_id=un.id and cg.estado='vencido')),
-    'accesos_hoy', (select count(*) from accesos where condominio_id=c and created_at::date=current_date),
+    'accesos_hoy', (select count(*) from accesos where condominio_id=c and created_at >= inicio_hoy),
     'tickets_abiertos', (select count(*) from tickets where condominio_id=c and estado<>'cerrado'),
     'paquetes_pendientes', (select count(*) from paquetes where condominio_id=c and entregado_at is null),
     'meses', (select json_agg(m order by m.mes) from (
         select to_char(g,'YYYY-MM') mes,
-          coalesce((select sum(monto) from pagos where condominio_id=c and confirmado and date_trunc('month',created_at)=g),0) ingresos,
-          coalesce((select sum(monto) from egresos where condominio_id=c and date_trunc('month',fecha)=g),0) egresos
-        from generate_series(date_trunc('month',now())-interval '5 months', date_trunc('month',now()), interval '1 month') g) m)
+          coalesce((select sum(monto) from pagos where condominio_id=c and confirmado
+            and date_trunc('month', created_at at time zone 'America/Hermosillo')=g),0) ingresos,
+          coalesce((select sum(monto) from egresos where condominio_id=c and date_trunc('month',fecha::timestamp)=g),0) egresos
+        from generate_series(date_trunc('month',ahora_local)-interval '5 months', date_trunc('month',ahora_local), interval '1 month') g) m)
   ) into r;
   return r;
 end $$;
@@ -347,7 +353,8 @@ begin
     'alertas_abiertas',(select count(*) from alertas where condominio_id=c and not atendida),
     'tickets_abiertos',(select count(*) from tickets where condominio_id=c and estado<>'cerrado'),
     'paquetes_pendientes',(select count(*) from paquetes where condominio_id=c and entregado_at is null),
-    'avisos_mes',     (select count(*) from avisos where condominio_id=c and created_at >= date_trunc('month', now())),
+    'avisos_mes',     (select count(*) from avisos where condominio_id=c
+                         and created_at >= date_trunc('month', now() at time zone 'America/Hermosillo') at time zone 'America/Hermosillo'),
     'dias', (select json_agg(d order by d.dia) from (
         select to_char(g,'YYYY-MM-DD') dia,
           (select count(*) from accesos a where a.condominio_id=c and a.permitido
@@ -493,6 +500,42 @@ create table if not exists reservaciones (
 );
 create unique index if not exists reservas_unicas on reservaciones(area_id, fecha, hora_inicio);
 
+-- La hora de fin debe ser posterior a la de inicio. "not valid" para no fallar si hay filas viejas
+-- incorrectas; luego se intenta validar y, si alguna no cumple, solo se avisa (las nuevas sí se rechazan).
+alter table reservaciones drop constraint if exists reservas_horas_validas;
+alter table reservaciones add constraint reservas_horas_validas check (hora_fin > hora_inicio) not valid;
+do $$ begin
+  alter table reservaciones validate constraint reservas_horas_validas;
+exception when check_violation then
+  raise notice 'Hay reservaciones con hora_fin <= hora_inicio; revísalas. Las nuevas ya se validan.';
+end $$;
+
+-- Sin traslapes: misma área y fecha no pueden cruzarse en horario. Valida también que el área sea del condominio.
+create or replace function validar_reservacion() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare otra reservaciones;
+begin
+  if not exists (select 1 from areas where id = new.area_id and condominio_id = new.condominio_id) then
+    raise exception 'El área no pertenece a tu condominio';
+  end if;
+  -- serializa reservas de la misma área y fecha para que dos inserciones simultáneas no se traslapen
+  perform pg_advisory_xact_lock(hashtextextended(new.area_id::text || '|' || new.fecha::text, 0));
+  select * into otra from reservaciones r
+   where r.area_id = new.area_id and r.fecha = new.fecha and r.id <> new.id
+     and new.hora_inicio < r.hora_fin and new.hora_fin > r.hora_inicio
+   limit 1;
+  if found then
+    raise exception 'El área ya está reservada de % a % ese día; elige otro horario',
+      to_char(otra.hora_inicio, 'HH24:MI'), to_char(otra.hora_fin, 'HH24:MI')
+      using errcode = 'exclusion_violation';
+  end if;
+  return new;
+end $$;
+drop trigger if exists trg_validar_reservacion on reservaciones;
+create trigger trg_validar_reservacion before insert or update on reservaciones
+  for each row execute function validar_reservacion();
+create index if not exists reservas_area_fecha on reservaciones(area_id, fecha);
+
 create table if not exists encuestas (
   id uuid primary key default gen_random_uuid(),
   condominio_id uuid not null references condominios(id),
@@ -591,7 +634,7 @@ create policy ar_adm  on areas for all    using (condominio_id = my_condo() and 
 
 create policy rs_read on reservaciones for select using (condominio_id = my_condo());
 create policy rs_ins  on reservaciones for insert with check (condominio_id = my_condo() and (my_rol()='admin' or unidad_id = my_unidad()));
-create policy rs_del  on reservaciones for delete using (my_rol()='admin' or unidad_id = my_unidad());
+create policy rs_del  on reservaciones for delete using (condominio_id = my_condo() and (my_rol()='admin' or unidad_id = my_unidad()));
 
 create policy en_read on encuestas for select using (condominio_id = my_condo());
 create policy en_adm  on encuestas for all    using (condominio_id = my_condo() and my_rol()='admin');

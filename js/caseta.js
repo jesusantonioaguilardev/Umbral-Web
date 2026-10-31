@@ -57,7 +57,7 @@ window.Caseta = (function () {
     const $ = (s) => el.querySelector(s);
 
     // Reloj
-    const tick = () => ($("#reloj").textContent = new Date().toLocaleTimeString("es-MX", { hour12: false }));
+    const tick = () => ($("#reloj").textContent = new Date().toLocaleTimeString("es-MX", { timeZone: UI.zona.tz, hour12: false }));
     tick(); timers.push(setInterval(tick, 1000));
 
     // ---------- Validación ----------

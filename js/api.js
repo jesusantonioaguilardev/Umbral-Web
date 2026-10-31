@@ -19,7 +19,8 @@
     let me = null;
     const q = async (p) => { const { data, error } = await p; if (error) throw new Error(error.message); return data; };
     const flat = (r) => ({ ...r, unidad: r.unidades?.nombre || "—" });
-    const hoy0 = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.toISOString(); };
+    const Z = () => window.UI.zona; // zona horaria del condominio (ui.js carga después; se usa en tiempo de llamada)
+    const hoy0 = () => Z().inicioDia();
 
     async function loadProfile(user) {
       const p = await q(sb.from("profiles").select("*, condominios(*)").eq("id", user.id).single());
@@ -60,7 +61,7 @@
         return (await q(s)).map(flat);
       },
       async esperadosHoy() {
-        const d = new Date(), dow = ((d.getDay() + 6) % 7) + 1;
+        const d = new Date(), dow = Z().partes(d).dow;
         const rows = await q(sb.from("pases").select("*, unidades(nombre)").eq("activo", true).neq("tipo", "residente").gt("valido_hasta", d.toISOString()).lte("valido_desde", new Date(d.getTime() + 864e5).toISOString()));
         return rows.filter((p) => p.modalidad === "una_vez" ? (p.usos_max == null || p.usos < p.usos_max) : (!p.dias || p.dias.includes(dow))).map(flat);
       },
@@ -117,8 +118,8 @@
 
       // ---- Reportes: filas crudas por rango de fechas ([desde, hasta] en YYYY-MM-DD) ----
       async reporte(tipo, { desde, hasta, unidad_id } = {}) {
-        const ini = desde ? new Date(desde + "T00:00").toISOString() : null;
-        const fin = hasta ? new Date(hasta + "T23:59:59.999").toISOString() : null;
+        const ini = desde ? Z().inicioDia(desde) : null;
+        const fin = hasta ? Z().finDia(hasta) : null;
         const rango = (s, col = "created_at", fecha = false) => {
           if (desde) s = s.gte(col, fecha ? desde : ini);
           if (hasta) s = s.lte(col, fecha ? hasta : fin);
@@ -149,7 +150,7 @@
       async areas() { return q(sb.from("areas").select("*").order("nombre")); },
       async crearArea(a) { return q(sb.from("areas").insert({ ...a, condominio_id: me.condominio_id }).select().single()); },
       async reservaciones() {
-        return (await q(sb.from("reservaciones").select("*, unidades(nombre), areas(nombre)").gte("fecha", new Date().toISOString().slice(0, 10)).order("fecha")))
+        return (await q(sb.from("reservaciones").select("*, unidades(nombre), areas(nombre)").gte("fecha", Z().hoy()).order("fecha")))
           .map((r) => ({ ...flat(r), area: r.areas?.nombre }));
       },
       async cancelarReservacion(id) { return q(sb.from("reservaciones").delete().eq("id", id)); },
