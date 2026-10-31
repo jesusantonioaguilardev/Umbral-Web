@@ -19,6 +19,7 @@ window.Admin = (function () {
     { group: "Seguridad" },
     { id: "accesos", label: "Bitácora de accesos", icon: "⛨", mod: "accesos" },
     { id: "pases", label: "Pases y proveedores", icon: "▣", mod: "accesos" },
+    { id: "listaNegra", label: "Lista negra", icon: "⊘", mod: "accesos" },
     { group: "Comunidad" },
     { id: "avisos", label: "Comunicados", icon: "✉", mod: "comunidad" },
     { id: "paquetes", label: "Paquetería", icon: "▢", mod: "comunidad" },
@@ -275,19 +276,19 @@ window.Admin = (function () {
       async accesos(c) {
         const rows = await API.accesos({ limit: 500 });
         c.innerHTML = head("Bitácora de accesos", "Cada entrada con hora, unidad y quién autorizó", `<button class="btn" id="csv">Exportar CSV</button>`) + `
-          <div class="row wrap" style="margin-bottom:12px"><input class="input" id="bq" placeholder="Buscar nombre o unidad" style="max-width:280px">
+          <div class="row wrap" style="margin-bottom:12px"><input class="input" id="bq" placeholder="Buscar nombre, unidad o placa" style="max-width:280px">
             <select id="ft" style="max-width:180px"><option value="">Todos los tipos</option>${Object.entries(TIPOS).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}</select>
             <select id="fr" style="max-width:180px"><option value="">Todos</option><option value="1">Permitidos</option><option value="0">Denegados</option></select></div>
           <div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>Fecha</th><th>Nombre</th><th>Unidad</th><th>Tipo</th><th>Autorizó</th><th>Punto</th><th>Resultado</th></tr></thead><tbody id="tb"></tbody></table></div></div>`;
         const draw = () => {
           const qv = c.querySelector("#bq").value.toLowerCase(), ft = c.querySelector("#ft").value, fr = c.querySelector("#fr").value;
-          const f = rows.filter((r) => (r.nombre + " " + r.unidad).toLowerCase().includes(qv) && (!ft || r.tipo === ft) && (!fr || String(+r.permitido) === fr));
-          c.querySelector("#tb").innerHTML = f.map((r) => `<tr><td class="small">${dateTime(r.created_at)}</td><td><b>${esc(r.nombre)}</b></td><td>${esc(r.unidad)}</td><td>${esc(TIPOS[r.tipo] || r.tipo)}</td><td class="small muted">${esc(r.autorizo || "—")}</td><td class="small muted">${esc(r.punto || "")}</td>
+          const f = rows.filter((r) => (r.nombre + " " + r.unidad + " " + (r.placa || "")).toLowerCase().includes(qv) && (!ft || r.tipo === ft) && (!fr || String(+r.permitido) === fr));
+          c.querySelector("#tb").innerHTML = f.map((r) => `<tr><td class="small">${dateTime(r.created_at)}</td><td><b>${esc(r.nombre)}</b>${r.placa ? `<div class="small muted">Placa ${esc(r.placa)}</div>` : ""}</td><td>${esc(r.unidad)}</td><td>${esc(TIPOS[r.tipo] || r.tipo)}</td><td class="small muted">${esc(r.autorizo || "—")}</td><td class="small muted">${esc(r.punto || "")}</td>
             <td>${r.permitido ? `<span class="chip ok">Permitido</span>` : `<span class="chip bad" title="${esc(r.motivo || "")}">${esc(r.motivo || "Denegado")}</span>`}</td></tr>`).join("") || `<tr><td colspan="7" class="empty">Sin registros</td></tr>`;
         };
         ["#bq", "#ft", "#fr"].forEach((s) => (c.querySelector(s).oninput = draw));
         draw();
-        c.querySelector("#csv").onclick = () => downloadCsv("bitacora.csv", [["fecha", "nombre", "unidad", "tipo", "permitido", "motivo", "autorizo"], ...rows.map((r) => [r.created_at, r.nombre, r.unidad, r.tipo, r.permitido, r.motivo || "", r.autorizo || ""])]);
+        c.querySelector("#csv").onclick = () => downloadCsv("bitacora.csv", [["fecha", "nombre", "placa", "unidad", "tipo", "permitido", "motivo", "autorizo"], ...rows.map((r) => [r.created_at, r.nombre, r.placa || "", r.unidad, r.tipo, r.permitido, r.motivo || "", r.autorizo || ""])]);
       },
 
       async pases(c) {
@@ -329,6 +330,39 @@ window.Admin = (function () {
             } });
           if (d && creado) { toast("Pase creado · código " + creado.codigo); refresh(); }
         };
+      },
+
+      async listaNegra(c) {
+        const xs = await API.listaNegra();
+        const act = xs.filter((x) => x.activo).length;
+        c.innerHTML = head("Lista negra", `${act} activas · ${xs.length - act} desactivadas`, `<button class="btn primary" id="nl">+ Agregar</button>`) + `
+          ${!xs.length ? `<div class="card empty">
+              <b>Aún no hay personas restringidas.</b><br>Agrega aquí a quien no debe entrar al condominio. La caseta negará sus pases y avisará al guardia si llega sin pase, por nombre o por placa.<br>
+              <button class="btn primary" id="nl2" style="margin-top:10px">+ Agregar a la lista</button></div>` : `
+          <div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>Nombre</th><th>Placa</th><th>Motivo</th><th>Agregada</th><th>Estado</th><th></th></tr></thead><tbody>
+          ${xs.map((x) => `<tr><td><b>${esc(x.nombre)}</b></td><td>${x.placa ? `<code>${esc(x.placa)}</code>` : `<span class="muted">—</span>`}</td><td class="small">${esc(x.motivo || "—")}</td><td class="small muted">${date(x.created_at)}</td>
+            <td>${x.activo ? `<span class="chip bad">⊘ Restringida</span>` : `<span class="chip">Desactivada</span>`}</td>
+            <td><button class="btn" data-ln="${esc(x.id)}">${x.activo ? "Desactivar" : "Reactivar"}</button></td></tr>`).join("")}
+          </tbody></table></div></div>`}`;
+        const nuevo = async () => {
+          const d = await form({ title: "Agregar a la lista negra", submit: "Agregar", fields: [
+            { name: "nombre", label: "Nombre completo", required: true },
+            { name: "placa", label: "Placa del vehículo (opcional)", placeholder: "ABC-123-D" },
+            { name: "motivo", label: "Motivo (opcional)", type: "textarea" }],
+            onSubmit: (v) => API.agregarListaNegra({ nombre: v.nombre.trim(), placa: v.placa.trim().toUpperCase() || null, motivo: v.motivo.trim() || null }) });
+          if (d) { toast("Agregada a la lista negra"); refresh(); }
+        };
+        c.querySelector("#nl").onclick = nuevo;
+        if (c.querySelector("#nl2")) c.querySelector("#nl2").onclick = nuevo;
+        c.querySelectorAll("[data-ln]").forEach((b) => (b.onclick = async () => {
+          const x = xs.find((y) => String(y.id) === b.dataset.ln);
+          const ok = x.activo
+            ? await confirmDlg("Desactivar restricción", `${x.nombre} podrá volver a entrar con pase o con autorización del residente.`)
+            : await confirmDlg("Reactivar restricción", `La caseta volverá a negar el acceso a ${x.nombre}.`);
+          if (!ok) return;
+          try { await API.cambiarListaNegra(x.id, !x.activo); toast(x.activo ? "Restricción desactivada" : "Restricción reactivada"); refresh(); }
+          catch (e) { toast("No se pudo actualizar: " + e.message); }
+        }));
       },
 
       async avisos(c) {

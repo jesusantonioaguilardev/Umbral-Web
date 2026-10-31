@@ -141,8 +141,47 @@ create table if not exists alertas (
   created_at timestamptz default now()
 );
 
+-- Placa del vehículo en el registro manual de caseta
+alter table accesos add column if not exists placa text;
+
 create index if not exists accesos_condo_fecha on accesos(condominio_id, created_at desc);
 create index if not exists pases_unidad on pases(unidad_id, created_at desc);
+
+-- Lista negra: personas o placas a las que administración niega el acceso
+create table if not exists lista_negra (
+  id uuid primary key default gen_random_uuid(),
+  condominio_id uuid not null references condominios(id),
+  nombre text not null,
+  placa text,
+  motivo text,
+  activo boolean not null default true,
+  creado_por uuid references profiles(id) default auth.uid(),
+  created_at timestamptz default now()
+);
+create index if not exists lista_negra_condo on lista_negra(condominio_id, activo);
+
+-- Normaliza para comparar: minúsculas, sin acentos, espacios colapsados / placa solo alfanumérica en mayúsculas
+create or replace function normalizar_nombre(p text) returns text
+language sql immutable set search_path = public as
+$$ select nullif(trim(regexp_replace(lower(translate(coalesce(p,''), 'ÁÉÍÓÚÜÑáéíóúüñ', 'AEIOUUNaeiouun')), '\s+', ' ', 'g')), '') $$;
+
+create or replace function normalizar_placa(p text) returns text
+language sql immutable set search_path = public as
+$$ select nullif(upper(regexp_replace(coalesce(p,''), '[^A-Za-z0-9]', '', 'g')), '') $$;
+
+-- Caseta consulta si un nombre o una placa están restringidos (primera coincidencia activa del condominio)
+create or replace function en_lista_negra(p_nombre text, p_placa text default null)
+returns json language plpgsql stable security definer set search_path = public as $$
+declare hit lista_negra; n text := normalizar_nombre(p_nombre); pl text := normalizar_placa(p_placa);
+begin
+  if not es_staff() then raise exception 'Solo caseta o administración'; end if;
+  select * into hit from lista_negra l
+   where l.condominio_id = my_condo() and l.activo
+     and ((n is not null and normalizar_nombre(l.nombre) = n) or (pl is not null and normalizar_placa(l.placa) = pl))
+   order by l.created_at limit 1;
+  if not found then return json_build_object('restringido', false); end if;
+  return json_build_object('restringido', true, 'nombre', hit.nombre, 'motivo', hit.motivo);
+end $$;
 
 -- El residente solo puede cancelar sus pases; usos y vigencia los controla caseta/administración
 create or replace function proteger_pase() returns trigger
@@ -189,6 +228,9 @@ begin
   select nombre into autor from profiles where id = p.creado_por;
 
   if not p.activo then ok := false; motivo := 'Pase cancelado';
+  elsif p.tipo <> 'residente' and exists (select 1 from lista_negra l where l.condominio_id = p.condominio_id and l.activo
+      and normalizar_nombre(l.nombre) = normalizar_nombre(p.visitante)) then
+    ok := false; motivo := 'Persona restringida por administración';
   elsif ahora < p.valido_desde then ok := false; motivo := 'Aún no es válido';
   elsif ahora > p.valido_hasta then ok := false; motivo := 'Pase vencido';
   elsif p.usos_max is not null and p.usos >= p.usos_max then ok := false; motivo := 'Pase ya utilizado';
@@ -304,25 +346,38 @@ begin
   return n;
 end $$;
 
--- Marca vencidos (programar con pg_cron diario si se desea)
+-- Marca vencidos (pg_cron la ejecuta a diario, ver abajo)
 create or replace function marcar_vencidos() returns void language sql as
 $$ update cargos set estado='vencido' where estado='pendiente' and vence < (now() at time zone 'America/Hermosillo')::date $$;
 
--- KPIs del mes para el comité (día y mes según America/Hermosillo)
+-- Programa marcar_vencidos todos los días a las 07:10 UTC (00:10 en Hermosillo).
+-- Si pg_cron no está habilitado en el proyecto, solo avisa y el script sigue.
+do $$ begin
+  create extension if not exists pg_cron;
+  perform cron.unschedule(jobid) from cron.job where jobname = 'umbral-vencidos';
+  perform cron.schedule('umbral-vencidos', '10 7 * * *', 'select public.marcar_vencidos()');
+exception when others then
+  raise notice 'No se programó marcar_vencidos (pg_cron no disponible: %). Habilítalo en Database → Extensions.', sqlerrm;
+end $$;
+
+-- KPIs del mes para el comité (día y mes según America/Hermosillo).
+-- Vencido = estado 'vencido' o 'pendiente' con fecha ya pasada (por si el cron aún no corre).
 create or replace function kpis_admin() returns json
 language plpgsql security definer set search_path = public as $$
 declare c uuid := my_condo(); r json;
   ahora_local timestamp := now() at time zone 'America/Hermosillo';
+  hoy date := (now() at time zone 'America/Hermosillo')::date;
   inicio_hoy timestamptz := date_trunc('day', ahora_local) at time zone 'America/Hermosillo';
   inicio_mes timestamptz := date_trunc('month', ahora_local) at time zone 'America/Hermosillo';
 begin
   if my_rol() is distinct from 'admin' then raise exception 'Solo administración'; end if;
   select json_build_object(
     'cobrado_mes', coalesce((select sum(monto) from pagos where condominio_id=c and confirmado and created_at >= inicio_mes),0),
-    'cartera_vencida', coalesce((select sum(monto) from cargos where condominio_id=c and estado='vencido'),0),
+    'cartera_vencida', coalesce((select sum(monto) from cargos where condominio_id=c
+        and (estado='vencido' or (estado='pendiente' and vence < hoy))),0),
     'unidades', (select count(*) from unidades where condominio_id=c),
     'unidades_al_corriente', (select count(*) from unidades un where condominio_id=c and not exists
-        (select 1 from cargos cg where cg.unidad_id=un.id and cg.estado='vencido')),
+        (select 1 from cargos cg where cg.unidad_id=un.id and (cg.estado='vencido' or (cg.estado='pendiente' and cg.vence < hoy)))),
     'accesos_hoy', (select count(*) from accesos where condominio_id=c and created_at >= inicio_hoy),
     'tickets_abiertos', (select count(*) from tickets where condominio_id=c and estado<>'cerrado'),
     'paquetes_pendientes', (select count(*) from paquetes where condominio_id=c and entregado_at is null),
@@ -582,6 +637,7 @@ alter table areas         enable row level security;
 alter table reservaciones enable row level security;
 alter table encuestas     enable row level security;
 alter table votos         enable row level security;
+alter table lista_negra   enable row level security;
 
 -- Re-ejecutable: borra las políticas previas antes de crearlas
 do $$ declare r record; begin
@@ -605,6 +661,10 @@ create policy pases_upd  on pases for update using (condominio_id = my_condo() a
 -- Bitácora: staff completo; residente solo su unidad
 create policy acc_read on accesos for select using (condominio_id = my_condo() and (es_staff() or unidad_id = my_unidad()));
 create policy acc_ins  on accesos for insert with check (condominio_id = my_condo() and es_staff());
+
+-- Lista negra: caseta y admin la consultan; solo administración la edita. El residente no la ve.
+create policy ln_read on lista_negra for select using (condominio_id = my_condo() and es_staff());
+create policy ln_adm  on lista_negra for all    using (condominio_id = my_condo() and my_rol()='admin');
 
 create policy al_read on alertas for select using (condominio_id = my_condo());
 create policy al_ins  on alertas for insert with check (condominio_id = my_condo());
@@ -661,7 +721,7 @@ create policy avisos_files_del on storage.objects for delete to authenticated
 
 -- ---------- Tiempo real (dashboard caseta / admin) ----------
 do $$ declare t text; begin
-  foreach t in array array['accesos','alertas','paquetes','tickets','avisos'] loop
+  foreach t in array array['accesos','alertas','paquetes','tickets','avisos','lista_negra'] loop
     if not exists (select 1 from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename=t) then
       execute format('alter publication supabase_realtime add table %I', t);
     end if;
