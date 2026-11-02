@@ -19,6 +19,8 @@
           <div class="error" role="alert">${esc(error)}</div>
           <button class="btn primary lg" style="width:100%;margin-top:8px">Entrar</button>
         </form>
+        <button type="button" class="btn link olvide" id="olv">¿Olvidaste tu contraseña?</button>
+        <div id="rec" role="status" aria-live="polite"></div>
         <p class="foot">¿No tienes cuenta? Pídela a la administración.<br>Umbral · Control de accesos y comunidad</p>
       </main></div>`);
     root.appendChild(el);
@@ -27,6 +29,17 @@
       try { route(await API.login(email, pw)); } catch (e) { el.querySelector(".error").textContent = e.message; }
     };
     el.querySelector("#lf").onsubmit = (e) => { e.preventDefault(); go(el.querySelector("#em").value, el.querySelector("#pw").value); };
+    // Recuperar contraseña: mensaje neutral, sin revelar si el correo está registrado
+    const olv = el.querySelector("#olv"), rec = el.querySelector("#rec");
+    olv.onclick = async () => {
+      rec.textContent = "";
+      const d = await UI.form({ title: "Recuperar contraseña", submit: "Enviar enlace",
+        intro: "Escribe el correo de tu cuenta. Te mandaremos un enlace para elegir una nueva contraseña.",
+        fields: [{ name: "email", label: "Correo", type: "email", required: true, value: el.querySelector("#em").value.trim(), placeholder: "nombre@correo.com" }],
+        onSubmit: (v) => API.recuperarContrasena(v.email) });
+      if (d) rec.replaceChildren(h(`<p class="notice ok">Si el correo está registrado, te enviamos un enlace para elegir una nueva contraseña. Revisa también tu correo no deseado.</p>`));
+      olv.focus();
+    };
   }
 
   async function logout() { await API.logout(); renderLogin(); }

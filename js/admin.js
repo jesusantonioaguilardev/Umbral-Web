@@ -584,7 +584,7 @@ window.Admin = (function () {
           <div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>Nombre</th><th>Correo</th><th>Rol</th><th>Unidad</th><th></th></tr></thead><tbody>
           ${us.map((u) => `<tr><td><div class="row"><span class="avatar" aria-hidden="true">${esc(initials(u.nombre))}</span><b>${esc(u.nombre)}</b></div></td><td class="small muted">${esc(u.email || "—")}</td>
             <td><span class="chip ${u.rol === "admin" ? "accent" : u.rol === "guardia" ? "warn" : ""}">${esc(ROLES[u.rol])}</span></td><td>${esc(u.unidad || "—")}</td>
-            <td><div class="row" style="justify-content:flex-end"><button class="btn" data-u="${esc(u.id)}">Editar</button>${u.id !== me.id ? `<button class="btn ghost" data-q="${esc(u.id)}">Quitar</button>` : ""}</div></td></tr>`).join("") || `<tr><td colspan="5" class="empty">Aún no hay usuarios. Invita al primero con “+ Invitar usuario” o importa un CSV.</td></tr>`}
+            <td><div class="row" style="justify-content:flex-end"><button class="btn" data-u="${esc(u.id)}">Editar</button>${u.email ? `<button class="btn ghost" data-r="${esc(u.id)}" aria-label="Enviar enlace de contraseña a ${esc(u.nombre)}">Enviar enlace de contraseña</button>` : ""}${u.id !== me.id ? `<button class="btn ghost" data-q="${esc(u.id)}">Quitar</button>` : ""}</div></td></tr>`).join("") || `<tr><td colspan="5" class="empty">Aún no hay usuarios. Invita al primero con “+ Invitar usuario” o importa un CSV.</td></tr>`}
           </tbody></table></div></div>
           <p class="small muted" style="margin-top:12px"><b>Invitar</b> le manda un correo para que cree su contraseña y entre a la app Umbral o al panel; si ya tenía cuenta, solo queda vinculada.
           <b>Vincular cuenta existente</b> sirve para cuentas creadas a mano en Supabase.</p>`;
@@ -631,6 +631,14 @@ window.Admin = (function () {
               return API.actualizarUsuario(u.id, { nombre: v.nombre.trim(), rol: v.rol, unidad_id: v.unidad_id || null });
             } });
           if (d) { toast("Usuario actualizado"); refresh(); }
+        }));
+        c.querySelectorAll("[data-r]").forEach((b) => (b.onclick = async () => {
+          const u = us.find((x) => x.id === b.dataset.r);
+          if (!(await confirmDlg("¿Enviar enlace de contraseña a " + u.nombre + "?", `Le llegará un correo a ${u.email} para elegir una nueva contraseña. La actual sigue funcionando hasta que la cambie.`))) return b.focus();
+          b.disabled = true;
+          try { await API.recuperarContrasena(u.email); toast("Enlace enviado a " + u.email); }
+          catch (e) { toast("No se pudo enviar el enlace: " + e.message); }
+          finally { b.disabled = false; b.focus(); }
         }));
         c.querySelectorAll("[data-q]").forEach((b) => (b.onclick = async () => {
           const u = us.find((x) => x.id === b.dataset.q);

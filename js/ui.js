@@ -59,7 +59,7 @@
 
   function toast(msg) {
     let box = document.querySelector(".toasts");
-    if (!box) { box = h(`<div class="toasts"></div>`); document.body.appendChild(box); }
+    if (!box) { box = h(`<div class="toasts" role="status" aria-live="polite"></div>`); document.body.appendChild(box); }
     const el = h(`<div class="toast">${esc(msg)}</div>`);
     box.appendChild(el); setTimeout(() => el.remove(), 2600);
   }

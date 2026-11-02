@@ -5,6 +5,12 @@ Cambios importantes de este proyecto. Formato basado en [Keep a Changelog](https
 ## [Sin publicar]
 
 ### Agregado
+- **Recuperar contraseña:** el login del panel tiene **¿Olvidaste tu contraseña?**, que manda un correo con un enlace a
+  `bienvenida.html` para elegir una nueva. Siempre responde lo mismo (*"Si el correo está registrado, te enviamos un
+  enlace…"*) para no revelar qué correos tienen cuenta. En *Usuarios y roles*, cada persona con correo tiene **Enviar enlace
+  de contraseña**, para que administración ayude a quien la olvidó sin cambiarla a mano en Supabase. Si se piden demasiados
+  enlaces seguidos, avisa *"Espera unos minutos antes de pedir otro enlace"*. No requiere SQL, pero sí traducir la plantilla
+  *Reset password* y tener `bienvenida.html` en *Redirect URLs* (ver README → Invitaciones por correo, paso 7).
 - **Invitar usuarios por correo:** en *Usuarios y roles*, **+ Invitar usuario** pide correo, nombre, rol y unidad, manda la
   invitación de Supabase y deja a la persona vinculada al condominio, sin tener que crear la cuenta a mano en Authentication.
   Si el correo ya tenía cuenta, solo se vincula. **(requiere ejecutar `supabase/schema.sql`)**

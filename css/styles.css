@@ -161,6 +161,8 @@ input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px;
 .login .brand .logo { width: 32px; height: 32px; border-radius: 9px; }
 .login h1 { font-size: 28px; line-height: 34px; }
 .login .lead { margin: 8px 0 28px; font-size: 15px; color: var(--muted); }
+.login .olvide { display: flex; width: 100%; min-height: 44px; margin-top: 8px; }
+.login #rec .notice { margin: 8px 0 0; }
 .login .foot { margin-top: 28px; font-size: 12px; color: var(--muted); text-align: center; }
 @media (max-width: 480px) { .login { border: 0; background: transparent; padding: 24px 12px; } }
 .notice { padding: 10px 12px; border-radius: var(--radius-sm); background: var(--warn-soft); color: var(--warn); font-size: 13px; margin-bottom: 14px; }
