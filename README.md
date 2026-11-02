@@ -115,6 +115,18 @@ respuestas y pruebas) está en [`supabase/functions/invitar/README.md`](supabase
 6. Traduce la plantilla en *Authentication → Emails → Templates → Invite user*: asunto `Te invitaron a Umbral` y un cuerpo en
    español que conserve `{{ .ConfirmationURL }}` (es el enlace que abre `bienvenida.html` con la sesión del invitado). Hay un
    ejemplo listo en el README de la función.
+7. Traduce también *Authentication → Emails → Templates → Reset password*, que usan **¿Olvidaste tu contraseña?** del login
+   y **Enviar enlace de contraseña** de *Usuarios y roles*: asunto `Cambia tu contraseña de Umbral` y un cuerpo en español
+   que conserve `{{ .ConfirmationURL }}`, por ejemplo:
+   ```html
+   <h2>Cambia tu contraseña de Umbral</h2>
+   <p>Recibimos una solicitud para cambiar la contraseña de tu cuenta. Toca el botón para elegir una nueva:</p>
+   <p><a href="{{ .ConfirmationURL }}">Elegir nueva contraseña</a></p>
+   <p>El enlace sirve una sola vez y vence pronto. Si no lo pediste, ignora este correo: tu contraseña no cambia.</p>
+   ```
+   El enlace lleva a `bienvenida.html` junto al panel (la misma página de `URL_BIENVENIDA`), así que esa URL debe estar en
+   *Redirect URLs* (paso 4); si no, Supabase manda a la persona al *Site URL* y no puede cambiar su contraseña. Este correo
+   cuenta para el mismo límite de envío por hora que las invitaciones.
 
 **Por qué la función no vincula:** `invitar` corre con la `service_role` y solo manda correos. El rol, la unidad y el
 condominio los asigna después el panel con `vincular_usuario`, con la sesión del admin. Así la regla de quién puede entrar a
@@ -397,8 +409,8 @@ Tiempo real (`supabase_realtime`): `accesos`, `alertas`, `paquetes`, `tickets`, 
 - **Pago con tarjeta:** la app llama a `reportarPago` con método `tarjeta`; falta integrar un procesador antes de esa llamada.
 - **Push en iOS:** la base de datos y la Edge Function ya lo soportan; falta la parte nativa de la app en Xcode
   (ver `iosApp/PUSH_IOS.md` en Umbral-App).
-- **Recuperar contraseña:** `bienvenida.html` ya acepta enlaces de recuperación (`type=recovery`), pero ni el panel ni la app
-  tienen todavía un botón *¿Olvidaste tu contraseña?* que los envíe.
+- **Recuperar contraseña en la app:** el panel ya manda enlaces de recuperación (login y *Usuarios y roles*); la app móvil
+  todavía no tiene su botón *¿Olvidaste tu contraseña?* (mientras, el residente puede pedirlo a administración).
 - **Push a caseta y administración desde el navegador:** el panel web no registra dispositivos; las alertas solo les llegan por
   push si usan la app con sesión abierta (y en Android 13+ con el permiso de notificaciones concedido).
 - **Fotos** en paquetes y tickets: las columnas `foto_url` ya existen.

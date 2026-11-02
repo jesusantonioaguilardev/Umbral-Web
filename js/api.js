@@ -214,6 +214,21 @@
         return data.user;
       },
       async cerrarSesionEnlace() { await sb.auth.signOut(); },
+      // Correo de recuperación (login y Usuarios y roles). Lleva a bienvenida.html junto al panel, la misma página que el
+      // secreto URL_BIENVENIDA de "invitar"; debe estar en Redirect URLs. Supabase no revela si el correo existe.
+      async recuperarContrasena(correo) {
+        const email = String(correo || "").trim().toLowerCase();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error("Escribe un correo válido, por ejemplo nombre@correo.com");
+        const redirectTo = new URL("bienvenida.html", location.href).href;
+        const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo });
+        if (!error) return true;
+        const m = error.message || "", code = error.code || "";
+        if (error.status === 429 || /rate.?limit/i.test(code + " " + m) || /security purposes|after \d+ seconds/i.test(m))
+          throw new Error("Espera unos minutos antes de pedir otro enlace");
+        if (code === "email_address_invalid" || /invalid.*email|email.*invalid/i.test(m)) throw new Error("Escribe un correo válido, por ejemplo nombre@correo.com");
+        if (!error.status || error.name === "AuthRetryableFetchError") throw new Error("No se pudo conectar con el servidor. Revisa tu conexión e intenta de nuevo");
+        throw new Error("No se pudo enviar el enlace. Intenta de nuevo en unos minutos");
+      },
       async desvincularUsuario(id) { return q(sb.rpc("desvincular_usuario", { p_id: id })); },
       async listaNegra() { return q(sb.from("lista_negra").select("*").order("created_at", { ascending: false })); },
       async agregarListaNegra(x) { return q(sb.from("lista_negra").insert({ ...x, condominio_id: me.condominio_id, creado_por: me.id }).select().single()); },
